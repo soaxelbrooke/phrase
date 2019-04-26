@@ -18,9 +18,11 @@ use std::path::Path;
 use std::fs::File;
 
 const DB_PATH: &str = "database.sqlite";
-const PRUNE_AT: u32 = 1_000_000;
+const PRUNE_AT: usize = 1_000_000;
 const MAX_NGRAM: usize = 4;
 const FILE_DELIM: char = '\t';
+const MIN_COUNT: i64 = 5;
+const MAX_EXPORT: u32 = 250_000;
 
 // URL regex
 // [-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)
@@ -148,8 +150,8 @@ fn count_document_ngrams(document: &String, ngrams: &mut HashMap<Vec<String>, i6
 
 fn read_partition_counts(label: Option<&String>) -> std::io::Result<Option<HashMap<Vec<String>, i64>>> {
     let path_str: String = match label {
-        Some(label) => format!("data/label={}", label),
-        None => String::from("data/root.txt"),
+        Some(label) => format!("data/counts_label={}", label),
+        None => String::from("data/counts_root.txt"),
     };
     let path = Path::new(&path_str);
     if path.exists() {
@@ -177,12 +179,14 @@ fn read_partition_counts(label: Option<&String>) -> std::io::Result<Option<HashM
 
 fn write_partition_counts(label: Option<&String>, ngrams: &HashMap<Vec<String>, i64>) -> std::io::Result<()> {
     info!("Writing partition {:?}.", &label);
+    let mut counts: Vec<(&Vec<String>, &i64)> = ngrams.iter().collect();
+    counts.sort_by(|a, b| b.1.cmp(a.1));
     let file = match label {
-        Some(label) => File::create(format!("data/label={}.txt", label))?,
-        None => File::create("data/root.txt")?,
+        Some(label) => File::create(format!("data/counts_label={}.txt", label))?,
+        None => File::create("data/counts_root.txt")?,
     };
     let mut file = LineWriter::new(file);
-    for (ngram, count) in ngrams {
+    for (ngram, count) in counts.iter().take(PRUNE_AT) {
         let phrase = ngram.iter().map(|s| s.to_string()).collect::<Vec<String>>().join(" "); 
         writeln!(file, "{}{}{}", phrase, FILE_DELIM, count)?;
     }
@@ -210,6 +214,65 @@ fn cmd_analyze(path: &str, labels: Option<Vec<String>>) {
     };
 }
 
+fn cmd_export(path: Option<&str>, label: Option<String>) {
+    info!("Exporting for label {:?}", label);
+    let ngrams = read_partition_counts(label.as_ref())
+        .expect("Couldn't read phrase counts.")
+        .expect("No phrase counts found for that label.");
+    
+    let mut scores: HashMap<Vec<String>, f64> = HashMap::new();
+    for (ngram, ngram_count) in &ngrams {
+        if ngram.len() == 1{
+            continue;
+        }
+
+        let vocab_size = ngrams.len() as f64;
+        let float_count = *ngram_count as f64;
+        let mut score: f64 = (ngram_count - MIN_COUNT) as f64 * vocab_size;
+
+        for unigram in ngram {
+            if let Some(unigram_count) = ngrams.get(&vec!(unigram.to_string())) {
+                score /= unigram_count.clone() as f64;
+            }
+        }
+
+        score = score.ln() / -(float_count / vocab_size).ln();
+
+        scores.insert(ngram.clone(), score);
+    }
+
+    let mut scores: Vec<(&Vec<String>, &f64)> = scores.iter().filter(|(_ngram, score)| {
+        score.is_finite() && score > &&0.15f64
+    }).collect();
+    scores.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
+    let mut written = 0;
+
+    if let Some(path) = path {
+        let file = File::create(path).unwrap();
+        let mut file = LineWriter::new(file);
+        for (ngram, score) in scores {
+            let phrase = ngram.iter().map(|s| s.to_string()).collect::<Vec<String>>().join(" "); 
+            writeln!(file, "{}{}{}", phrase, FILE_DELIM, score).unwrap();
+
+            written += 1;
+            if written > MAX_EXPORT {
+                return;
+            }
+        }
+        file.flush().unwrap();
+    } else {
+        for (ngram, score) in scores {
+            let phrase = ngram.iter().map(|s| s.to_string()).collect::<Vec<String>>().join(" "); 
+            println!("{}{}{}", phrase, FILE_DELIM, score);
+            
+            written += 1;
+            if written > MAX_EXPORT {
+                return;
+            }
+        }
+    }
+}
+
 fn main() {
     let matches = clap_app!(app => 
         (version: "0.1")
@@ -224,6 +287,11 @@ fn main() {
             (about: "Start API server")
             (@arg port: -p --port +takes_value "Port to serve on (default 6220)")
         )
+        (@subcommand export =>
+            (about: "Export a model from the ngram counts for a given label")
+            (@arg label: "The label for which to export a phrase model.")
+            (@arg output: -o --output +takes_value "Where to write the phrase model.")
+        )
     ).get_matches();
 
     if let Some(matches) = matches.subcommand_matches("serve") {
@@ -231,7 +299,6 @@ fn main() {
         serve(port);
     } else if let Some(matches) = matches.subcommand_matches("analyze") {
         env_logger::init();
-        info!("Hello.");
         let labels = matches.values_of("label").map(|values| values.map(|s| s.to_string()).collect());
         match matches.value_of("input") {
             Some(path) => {
@@ -242,6 +309,11 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    } else if let Some(matches) = matches.subcommand_matches("export") {
+        env_logger::init();
+        let label = matches.value_of("label");
+        let output = matches.value_of("output");
+        cmd_export(output, label.map(|s| s.to_string()));
     }
     
 }
