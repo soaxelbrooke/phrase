@@ -221,24 +221,42 @@ fn cmd_export(path: Option<&str>, label: Option<String>) {
         .expect("No phrase counts found for that label.");
     
     let mut scores: HashMap<Vec<String>, f64> = HashMap::new();
+    let total_count: i64 = ngrams.values().map(|i| i.to_owned()).sum();
+    let total_count: f64 = total_count as f64;
     for (ngram, ngram_count) in &ngrams {
         if ngram.len() == 1{
             continue;
         }
 
-        let vocab_size = ngrams.len() as f64;
-        let float_count = *ngram_count as f64;
-        let mut score: f64 = (ngram_count - MIN_COUNT) as f64 * vocab_size;
+        // // Skipgram Strategy
+        // let vocab_size = ngrams.len() as f64;
+        // let float_count = *ngram_count as f64;
+        // let mut score: f64 = (ngram_count - MIN_COUNT) as f64 * vocab_size;
 
-        for unigram in ngram {
-            if let Some(unigram_count) = ngrams.get(&vec!(unigram.to_string())) {
-                score /= unigram_count.clone() as f64;
+        // for unigram in ngram {
+        //     if let Some(unigram_count) = ngrams.get(&vec!(unigram.to_string())) {
+        //         score /= unigram_count.clone() as f64;
+        //     }
+        // }
+
+        // score = score.ln() / -(float_count / vocab_size).ln();
+
+        // NPMI Strategy
+        if ngram_count > &0i64 {
+            let pj: f64 = ngram_count.clone() as f64 / total_count;
+            let mut score: f64 = pj;
+            
+            for unigram in ngram {
+                if let Some(unigram_count) = ngrams.get(&vec!(unigram.to_string())) {
+                    score /= unigram_count.clone() as f64;
+                }
             }
+            score = score.ln();
+
+            score /= -pj.ln();
+
+            scores.insert(ngram.clone(), score);
         }
-
-        score = score.ln() / -(float_count / vocab_size).ln();
-
-        scores.insert(ngram.clone(), score);
     }
 
     let mut scores: Vec<(&Vec<String>, &f64)> = scores.iter().filter(|(_ngram, score)| {
@@ -282,6 +300,7 @@ fn main() {
             (about: "Analyze provided input text data")
             (@arg input: +required "File to read text data from, use - to pipe from stdin")
             (@arg label: -l --label +takes_value ... "Labels to apply to the documents")
+            (@arg csv: --csv "Parse input as CSV.  Use `label` column for label, `text` column to learn phrases.")
         )
         (@subcommand serve =>
             (about: "Start API server")
@@ -299,6 +318,7 @@ fn main() {
         serve(port);
     } else if let Some(matches) = matches.subcommand_matches("analyze") {
         env_logger::init();
+        let is_csv = matches.value_of("csv").is_some();
         let labels = matches.values_of("label").map(|values| values.map(|s| s.to_string()).collect());
         match matches.value_of("input") {
             Some(path) => {
@@ -315,5 +335,4 @@ fn main() {
         let output = matches.value_of("output");
         cmd_export(output, label.map(|s| s.to_string()));
     }
-    
 }
