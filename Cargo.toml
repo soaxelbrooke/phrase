@@ -16,6 +16,8 @@ clap = "2.33"
 log = "0.4"
 env_logger = "0.6"
 regex = "1"
+csv = "1"
+lazy_static = "1"
 
 [dependencies.rocket_contrib]
 version = "0.4.0"
