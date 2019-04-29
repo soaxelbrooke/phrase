@@ -253,8 +253,13 @@ fn merge_ngrams_into(from: &HashMap<Vec<String>, i64>, into: &mut HashMap<Vec<St
 
 fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut HashMap<Vec<String>, i64>) {
     let max_ngram = MAX_NGRAM.clone();
+    let mut doc_count = 0;
     for document in documents {
         count_document_ngrams(&document, ngrams, &max_ngram);
+        doc_count += 1;
+        if (doc_count % 1000) == 0 {
+            prune_ngrams(ngrams);
+        }
     }
 }
 
@@ -300,7 +305,22 @@ fn count_document_ngrams(document: &String, ngrams: &mut HashMap<Vec<String>, i6
     }
 }
 
+fn prune_ngrams(ngrams: &mut HashMap<Vec<String>, i64>) {
+    let ngrams_len = ngrams.len();
+    if ngrams_len > PRUNE_AT.clone() {
+        debug!("Pruning ngrams of length {}.", ngrams_len);
+        let mut ngram_pairs: Vec<(&Vec<String>, &i64)> = ngrams.iter().collect();
+        ngram_pairs.sort_by(|a, b| b.1.cmp(a.1));
+        let ngrams_to_prune: Vec<Vec<String>> = ngram_pairs.iter().map(|(ngram, _count)| ngram.to_owned().to_owned()).collect();
+        for ngram in ngrams_to_prune {
+            ngrams.remove(&ngram);
+        }
+        debug!("Done pruning.");
+    }
+}
+
 fn read_partition_counts(label: &Option<&String>) -> std::io::Result<Option<HashMap<Vec<String>, i64>>> {
+    debug!("Reading counts for label {:?}", label);
     let path_str: String = match label {
         Some(label) => format!("data/counts_label={}.txt", label),
         None => String::from("data/counts_root.txt"),
