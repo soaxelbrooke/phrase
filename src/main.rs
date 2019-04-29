@@ -20,13 +20,7 @@ use std::fs::File;
 
 use rocket_contrib::json::{Json, JsonValue};
 
-const DB_PATH: &str = "database.sqlite";
-const PRUNE_AT: usize = 1_000_000;
-const MAX_NGRAM: usize = 4;
 const FILE_DELIM: char = '\t';
-const MIN_COUNT: i64 = 5;
-const MAX_EXPORT: u32 = 250_000;
-const MIN_SCORE: f64 = 0.1;
 
 // URL regex
 // [-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)
@@ -39,10 +33,30 @@ lazy_static! {
     static ref TAIL_UNIGRAM_IGNORES: HashSet<String> = vec!(
         "the", "a", "i", "is", "you", "and", "my", "so", "for",
     ).iter().map(|s| s.to_string()).collect();
+}
 
-    static ref TOKEN_REGEX: Regex = Regex::new(r"[\w+'’]+").unwrap();
+fn parse_env<T: std::str::FromStr + Clone + std::fmt::Debug>(key: &str, default: T) -> T {
+    std::env::var(key).map(|s| {
+        match T::from_str(&s) {
+            Ok(v) => v,
+            Err(_err) => {
+                error!("Couldn't parse env var {}", key);
+                default.to_owned()
+            },
+        }
+    }).unwrap_or(default.to_owned())
+}
 
-    static ref CHUNK_SPLIT_REGEX: Regex = Regex::new(r"[\.\?!\(\);]+").unwrap();
+lazy_static! {
+    static ref PRUNE_AT: usize = parse_env("PRUNE_AT", 2_000_000);
+    static ref PRUNE_TO: usize = parse_env("PRUNE_TO", 1_000_000);
+    static ref MAX_NGRAM: usize = parse_env("MAX_NGRAM", 4);
+    static ref MIN_COUNT: i64 = parse_env("MIN_COUNT", 5);
+    static ref MIN_SCORE: f64 = parse_env("MIN_SCORE", 0.1f64);
+    static ref MAX_EXPORT: u32 = parse_env("MAX_EXPORT", 250_000);
+
+    static ref TOKEN_REGEX: Regex = Regex::new(&std::env::var("TOKEN_REGEX").unwrap_or(r"[\w+'’]+".to_string())).unwrap();
+    static ref CHUNK_SPLIT_REGEX: Regex = Regex::new(&std::env::var("CHUNK_SPLIT_REGEX").unwrap_or(r"[\.\?!\(\);]+".to_string())).unwrap();
 }
 
 lazy_static! {
@@ -81,17 +95,17 @@ struct ApiListLabelsResponse {
     labels: Vec<Option<String>>
 }
 
-fn analyze_text(text: &String, scores: &HashMap<Vec<String>, f64>) -> Vec<String> {
+fn analyze_text(text: &String, scores: &HashMap<Vec<String>, f64>, max_ngram: &usize) -> Vec<String> {
     let mut significant_ngrams: Vec<String> = vec!();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&text.to_lowercase()) {
         let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-        for i in 1..MAX_NGRAM+1 {
+        for i in 1..max_ngram+1 {
             token_queues.push(VecDeque::with_capacity(i));
         }
         for token in TOKEN_REGEX.find_iter(chunk) {
             let token_string = token.as_str().to_string();
-            for i in 1..MAX_NGRAM+1 {
+            for i in 1..max_ngram+1 {
                 if let Some(queue) = token_queues.get_mut(i - 1) {
                     queue.push_back(token_string.to_owned());
                     if queue.len() > i {
@@ -119,9 +133,10 @@ fn analyze_text(text: &String, scores: &HashMap<Vec<String>, f64>) -> Vec<String
 
 #[post("/analyze", data = "<data>")]
 fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
+    let max_ngram = MAX_NGRAM.clone();
     let analyzed_docs: Vec<AnalyzedDocument> = data.0.documents.iter().map(|d| {
         let significant_terms: Vec<String> = if let Some(scores) = SCORES.get(&d.label) {
-            analyze_text(&d.body, scores)
+            analyze_text(&d.body, scores, &max_ngram)
         } else {
             vec!()
         };
@@ -237,8 +252,9 @@ fn merge_ngrams_into(from: &HashMap<Vec<String>, i64>, into: &mut HashMap<Vec<St
 }
 
 fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut HashMap<Vec<String>, i64>) {
+    let max_ngram = MAX_NGRAM.clone();
     for document in documents {
-        count_document_ngrams(&document, ngrams);
+        count_document_ngrams(&document, ngrams, &max_ngram);
     }
 }
 
@@ -249,17 +265,17 @@ fn count_ngrams(documents: &Vec<String>) -> HashMap<Vec<String>, i64> {
     ngrams
 }
 
-fn count_document_ngrams(document: &String, ngrams: &mut HashMap<Vec<String>, i64>) {
+fn count_document_ngrams(document: &String, ngrams: &mut HashMap<Vec<String>, i64>, max_ngram: &usize) {
     let mut unique_ngrams: HashSet<Vec<String>> = HashSet::new();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&document.to_lowercase()) {
         let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-        for i in 1..MAX_NGRAM+1 {
+        for i in 1..max_ngram+1 {
             token_queues.push(VecDeque::with_capacity(i));
         }
         for token in TOKEN_REGEX.find_iter(chunk) {
             let token_string = token.as_str().to_string();
-            for i in 1..MAX_NGRAM+1 {
+            for i in 1..max_ngram+1 {
                 if let Some(queue) = token_queues.get_mut(i - 1) {
                     queue.push_back(token_string.to_owned());
                     if queue.len() > i {
@@ -351,7 +367,7 @@ fn write_partition_counts(label: Option<&String>, ngrams: &HashMap<Vec<String>, 
         None => File::create("data/counts_root.txt")?,
     };
     let mut file = LineWriter::new(file);
-    for (ngram, count) in counts.iter().take(PRUNE_AT) {
+    for (ngram, count) in counts.iter().take(PRUNE_TO.clone()) {
         let phrase = ngram.iter().map(|s| s.to_string()).collect::<Vec<String>>().join(" "); 
         writeln!(file, "{}{}{}", phrase, FILE_DELIM, count)?;
     }
@@ -484,6 +500,7 @@ fn ngram_valid(ngram: &Vec<String>) -> bool {
 
 fn score_phrases(label_ngrams: &HashMap<Option<String>, HashMap<Vec<String>, i64>>) -> HashMap<Option<String>, HashMap<Vec<String>, f64>> {
     let mut label_scores = HashMap::new();
+    let min_score = MIN_SCORE.clone();
     for (label, ngrams) in label_ngrams {
         let mut skipped = 0;
         let mut scores: HashMap<Vec<String>, f64> = HashMap::new();
@@ -497,7 +514,7 @@ fn score_phrases(label_ngrams: &HashMap<Option<String>, HashMap<Vec<String>, i64
                 continue;
             }
 
-            if let Some(score) = npmi_phrase_score(&total_count, ngram, ngram_count, &ngrams) {
+            if let Some(score) = npmi_phrase_score(&total_count, ngram, ngram_count, &ngrams, &min_score) {
                 scores.insert(ngram.clone(), score);
             } else {
                 skipped += 1;
@@ -511,6 +528,7 @@ fn score_phrases(label_ngrams: &HashMap<Option<String>, HashMap<Vec<String>, i64
 
 fn score_ngrams(label_ngrams: &HashMap<Option<String>, HashMap<Vec<String>, i64>>) -> HashMap<Option<String>, HashMap<Vec<String>, f64>> {
     let mut label_scores = HashMap::new();
+    let min_score = MIN_SCORE.clone();
     let label_ngram_totals: HashMap<Option<String>, f64> = label_ngrams.iter().map(|(label, ngrams)| {
         (
             label.to_owned(),
@@ -543,7 +561,7 @@ fn score_ngrams(label_ngrams: &HashMap<Option<String>, HashMap<Vec<String>, i64>
         for (ngram, ngram_count) in ngrams {
             if ngram_valid(ngram) {
                 let ngram_count_across_labels = ngram_counts_across_labels.get(ngram).unwrap_or(&0i64);
-                if let Some(score) = npmi_label_score(&all_tokens_total_count, &this_label_total_count, &ngram_count_across_labels, ngram_count) {
+                if let Some(score) = npmi_label_score(&all_tokens_total_count, &this_label_total_count, &ngram_count_across_labels, ngram_count, &min_score) {
                     scores.insert(ngram.clone(), score);
                 } else {
                     skipped += 1;
@@ -599,15 +617,16 @@ fn merge_scores(label_phrase_scores: &HashMap<Option<String>, HashMap<Vec<String
 }
 
 fn write_scores(scores: &HashMap<Vec<String>, f64>, label: &Option<String>) {
+    let max_export = MAX_EXPORT.clone();
     let mut scores: Vec<(&Vec<String>, &f64)> = scores.iter().filter(|(_ngram, score)| {
-        score.is_finite() // && score > &&0.15f64
+        score.is_finite()
     }).collect();
     scores.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
     let mut written = 0;
 
     let path = match label {
         Some(label) => format!("data/scores_label={}.txt", label),
-        None => "data/scores_root.txt".to_string()
+        None => "data/scores_root.txt".to_string(),
     };
 
     let file = File::create(path).unwrap();
@@ -617,7 +636,7 @@ fn write_scores(scores: &HashMap<Vec<String>, f64>, label: &Option<String>) {
         writeln!(file, "{}{}{}", phrase, FILE_DELIM, score).unwrap();
 
         written += 1;
-        if written > MAX_EXPORT {
+        if written > max_export {
             return;
         }
     }
@@ -628,20 +647,20 @@ fn write_scores(scores: &HashMap<Vec<String>, f64>, label: &Option<String>) {
 /// p_joint = ngram_count / this_label_total_count
 /// pt = this_token_total_count / all_tokens_total_count
 /// pl = this_label_total_count / all_labels_total_count
-fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, ngram_count_across_labels: &i64, ngram_count: &i64) -> Option<f64> {
+fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, ngram_count_across_labels: &i64, ngram_count: &i64, min_score: &f64) -> Option<f64> {
     let pj = ngram_count.clone() as f64 / all_tokens_total_count;
     let pt = ngram_count_across_labels.clone() as f64 / all_tokens_total_count;
     let pl = this_label_total_count / all_tokens_total_count;
 
     if pt > 0f64 && pl > 0f64 && ngram_count >= &MIN_COUNT {
         let score = (pj / pt / pl).ln() / -pj.ln();
-        if score > MIN_SCORE { Some(score) } else { None }
+        if &score > min_score { Some(score) } else { None }
     } else {
         None
     }
 }
 
-fn npmi_phrase_score(corpus_size: &f64, ngram: &Vec<String>, ngram_count: &i64, ngrams: &HashMap<Vec<String>, i64>) -> Option<f64> {
+fn npmi_phrase_score(corpus_size: &f64, ngram: &Vec<String>, ngram_count: &i64, ngrams: &HashMap<Vec<String>, i64>, min_score: &f64) -> Option<f64> {
     if ngram_count > &MIN_COUNT {
         let left_subgram: Vec<String> = ngram[..ngram.len() - 1].to_owned();
         let left_unigram: Vec<String> = ngram[..1].to_owned();
@@ -657,7 +676,7 @@ fn npmi_phrase_score(corpus_size: &f64, ngram: &Vec<String>, ngram_count: &i64, 
         let pb = (pbs * pbu).sqrt();
         let score: f64 = (pj / pa / pb).ln() / -pj.ln();
 
-        if score > MIN_SCORE { Some(score) } else { None }
+        if &score > min_score { Some(score) } else { None }
     } else {
         None
     }
