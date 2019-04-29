@@ -406,6 +406,7 @@ fn cmd_count(path: &str, label: Option<String>, is_csv: bool) {
         error!("Cannot specify label and provide a CSV");
         std::process::exit(1);
     }
+    std::fs::create_dir_all("data").expect("Failed to ensure data directory existence.");
     if path == "-" {
         count_stdin(label, is_csv);
     } else {
@@ -679,10 +680,11 @@ fn assert_label_valid(label: &Option<&String>) {
 }
 
 fn main() {
-    let matches = clap_app!(app => 
-        (version: "0.1")
+    let matches = clap_app!(phrase => 
+        (version: "0.2.3")
         (author: "Stuart Axelbrooke <stuart@axelbrooke.com>")
         (about: "Detect phrases in free text data.")
+        (setting: clap::AppSettings::ArgRequiredElseHelp)
         (@subcommand count =>
             (about: "Count ngrams in provided input text data")
             (@arg input: +required "File to read text data from, use - to pipe from stdin")
@@ -722,5 +724,7 @@ fn main() {
     } else if let Some(_matches) = matches.subcommand_matches("export") {
         env_logger::init();
         cmd_export();
+    } else {
+
     }
 }

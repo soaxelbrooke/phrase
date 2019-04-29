@@ -7,7 +7,7 @@ A tool for learning significant phrase/term models, and efficiently labeling wit
 
 ### Installation
 
-**TODO**
+Download and extract the [release archive](https://github.com/soaxelbrooke/phrase/releases) for your OS, and put the `phrase` binary somewhere on the PATH (like `/usr/local/bin`).
 
 ### Training a phrase model
 
