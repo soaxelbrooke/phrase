@@ -5,6 +5,10 @@ A tool for learning significant phrase/term models, and efficiently labeling wit
 
 ## Use
 
+### Installation
+
+**TODO**
+
 ### Training a phrase model
 
 First, you need to count ngrams from your data:
