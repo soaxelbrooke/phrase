@@ -16,6 +16,12 @@ matrix:
     env: TARGET=x86_64-unknown-linux-musl
 before_install:
 - export PATH="$PATH:$HOME/.cargo/bin"
+addons:
+  apt:
+    update: true
+    packages:
+    - musl-tools
+    - gcc-multilib
 install:
 - bash ci/install.sh
 script:
