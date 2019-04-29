@@ -100,7 +100,6 @@ fn analyze_text(text: &String, scores: &HashMap<Vec<String>, f64>) -> Vec<String
                     if queue.len() == i {
                         let queue: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
                         if let Some(score) = scores.get(&queue) {
-                            info!("{:?}: {}", queue, score);
                             if score > &MIN_SCORE {
                                 let ngram: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
                                 significant_ngrams.push(ngram.join(" "));
