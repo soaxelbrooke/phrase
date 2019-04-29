@@ -10,7 +10,6 @@ extern crate rusqlite;
 extern crate env_logger;
 // extern crate native_stemmers; // see https://crates.io/crates/rust-stemmers
 
-// use rocket_contrib::json::Json;
 use std::io::{BufReader, BufRead};
 use regex::Regex;
 use std::collections::{HashMap, VecDeque, HashSet};
@@ -32,11 +31,27 @@ const MIN_SCORE: f64 = 0.1;
 // URL regex
 // [-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)
 
-// Token regex
-// ([\w']+)
+lazy_static! {
+    static ref HEAD_UNIGRAM_IGNORES: HashSet<String> = vec!(
+        "the", "a", "is", "and", "of", "to",
+    ).iter().map(|s| s.to_string()).collect();
 
-// Sentence split pattern
-// [\.\?\!\(\)\;]
+    static ref TAIL_UNIGRAM_IGNORES: HashSet<String> = vec!(
+        "the", "a", "i", "is", "you", "and", "my", "so", "for",
+    ).iter().map(|s| s.to_string()).collect();
+
+    static ref TOKEN_REGEX: Regex = Regex::new(r"[\w+'’]+").unwrap();
+
+    static ref CHUNK_SPLIT_REGEX: Regex = Regex::new(r"[\.\?!\(\);]+").unwrap();
+}
+
+lazy_static! {
+    static ref SCORES: HashMap<Option<String>, HashMap<Vec<String>, f64>> = {
+        let mut label_ngrams = HashMap::new();
+        read_partition_scores_for_labels(&Some(list_score_labels().unwrap()), &mut label_ngrams).expect("Unable to read partitions for labels");
+        label_ngrams
+    };
+}
 
 #[derive(Deserialize, Debug)]
 struct Document {
@@ -56,47 +71,40 @@ struct ApiAnalyzeRequest {
     documents: Vec<Document>
 }
 
-lazy_static! {
-    static ref HEAD_UNIGRAM_IGNORES: HashSet<String> = vec!(
-        "the", "a", "is", "and", "of", "to",
-    ).iter().map(|s| s.to_string()).collect();
-
-    static ref TAIL_UNIGRAM_IGNORES: HashSet<String> = vec!(
-        "the", "a", "i", "is", "you", "and", "my", "so",
-    ).iter().map(|s| s.to_string()).collect();
-
-    static ref TOKEN_REGEX: Regex = Regex::new("[\\w+'’]+").unwrap();
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String
 }
 
-lazy_static! {
-    static ref SCORES: HashMap<Option<String>, HashMap<Vec<String>, f64>> = {
-        let mut label_ngrams = HashMap::new();
-        read_partition_scores_for_labels(&Some(list_score_labels().unwrap()), &mut label_ngrams).expect("Unable to read partitions for labels");
-        label_ngrams
-    };
+#[derive(Serialize)]
+struct ApiListLabelsResponse {
+    labels: Vec<Option<String>>
 }
 
 fn analyze_text(text: &String, scores: &HashMap<Vec<String>, f64>) -> Vec<String> {
     let mut significant_ngrams: Vec<String> = vec!();
-    let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-    for i in 1..MAX_NGRAM+1 {
-        token_queues.push(VecDeque::with_capacity(i));
-    }
 
-    for token in TOKEN_REGEX.find_iter(&text.to_lowercase()) {
-        let token_string = token.as_str().to_string();
+    for chunk in CHUNK_SPLIT_REGEX.split(&text.to_lowercase()) {
+        let mut token_queues: Vec<VecDeque<String>> = Vec::new();
         for i in 1..MAX_NGRAM+1 {
-            if let Some(queue) = token_queues.get_mut(i - 1) {
-                queue.push_back(token_string.to_owned());
-                if queue.len() > i {
-                    queue.pop_front();
-                }
-                if queue.len() == i {
-                    let queue: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
-                    if let Some(score) = scores.get(&queue) {
-                        if score > &MIN_SCORE {
-                            let ngram: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
-                            significant_ngrams.push(ngram.join(" "));
+            token_queues.push(VecDeque::with_capacity(i));
+        }
+        for token in TOKEN_REGEX.find_iter(chunk) {
+            let token_string = token.as_str().to_string();
+            for i in 1..MAX_NGRAM+1 {
+                if let Some(queue) = token_queues.get_mut(i - 1) {
+                    queue.push_back(token_string.to_owned());
+                    if queue.len() > i {
+                        queue.pop_front();
+                    }
+                    if queue.len() == i {
+                        let queue: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
+                        if let Some(score) = scores.get(&queue) {
+                            info!("{:?}: {}", queue, score);
+                            if score > &MIN_SCORE {
+                                let ngram: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
+                                significant_ngrams.push(ngram.join(" "));
+                            }
                         }
                     }
                 }
@@ -127,16 +135,21 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
     json!(analyzed_docs)
 }
 
-#[get("/hello")]
-fn hello() -> String {
-    String::from("Hey there!")
+#[get("/labels")]
+fn api_list_labels() -> JsonValue {
+    if let Ok(labels) = list_score_labels() {
+        json!(ApiListLabelsResponse { labels: labels })
+    } else {
+        json!(ErrorResponse { error: "Couldn't list labels.".to_string() })
+    }
 }
 
-fn serve(port: u16) {
+fn serve(host: &str, port: u16) {
+    println!("Starting phrase server");
     let config = rocket::Config::build(rocket::config::Environment::Development)
-        .port(port).finalize().expect("Couldn't create config.");
+        .port(port).address(host).finalize().expect("Couldn't create config.");
     rocket::custom(config)
-        .mount("/", routes![hello, api_analyze])
+        .mount("/", routes![api_list_labels, api_analyze])
         .launch();
 }
 
@@ -204,9 +217,10 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Label
         }
     }
 
-    info!("Labels: {:?}", groups.keys());
+    debug!("Counting ngrams for labels: {:?}", groups.keys());
 
     for (label, documents) in groups.iter_mut() {
+        debug!("Counting ngrams for label: {:?}", label);
         update_phrase_models(label.clone(), documents)?;
     }
 
@@ -237,24 +251,25 @@ fn count_ngrams(documents: &Vec<String>) -> HashMap<Vec<String>, i64> {
 }
 
 fn count_document_ngrams(document: &String, ngrams: &mut HashMap<Vec<String>, i64>) {
-    let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-    for i in 1..MAX_NGRAM+1 {
-        token_queues.push(VecDeque::with_capacity(i));
-    }
-
     let mut unique_ngrams: HashSet<Vec<String>> = HashSet::new();
 
-    for token in TOKEN_REGEX.find_iter(&document.to_lowercase()) {
-        let token_string = token.as_str().to_string();
+    for chunk in CHUNK_SPLIT_REGEX.split(&document.to_lowercase()) {
+        let mut token_queues: Vec<VecDeque<String>> = Vec::new();
         for i in 1..MAX_NGRAM+1 {
-            if let Some(queue) = token_queues.get_mut(i - 1) {
-                queue.push_back(token_string.to_owned());
-                if queue.len() > i {
-                    queue.pop_front();
-                }
-                if queue.len() == i {
-                    let queue: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
-                    unique_ngrams.insert(queue);
+            token_queues.push(VecDeque::with_capacity(i));
+        }
+        for token in TOKEN_REGEX.find_iter(chunk) {
+            let token_string = token.as_str().to_string();
+            for i in 1..MAX_NGRAM+1 {
+                if let Some(queue) = token_queues.get_mut(i - 1) {
+                    queue.push_back(token_string.to_owned());
+                    if queue.len() > i {
+                        queue.pop_front();
+                    }
+                    if queue.len() == i {
+                        let queue: Vec<String> = queue.iter().map(|s| s.to_string()).collect();
+                        unique_ngrams.insert(queue);
+                    }
                 }
             }
         }
@@ -346,10 +361,21 @@ fn write_partition_counts(label: Option<&String>, ngrams: &HashMap<Vec<String>, 
 }
 
 fn count_stdin(label: Option<String>, is_csv: bool) {
-    // TODO accept stdin CSV
-    let stdin = std::io::stdin();
-    let mut documents: Vec<String> = stdin.lock().lines().map(|s| s.expect("Coulnd't read line")).collect();
-    update_phrase_models(label, &mut documents).expect("Failed to update phrase models");
+    if is_csv {
+        let mut reader = csv::Reader::from_reader(std::io::stdin());
+        let mut labeled_documents: Vec<LabeledDocument> = vec!();
+
+        for result in reader.deserialize() {
+            let labeled_document: LabeledDocument = result.expect("failed to parse line");
+            labeled_documents.push(labeled_document);
+        }
+
+        update_phrase_models_from_labeled_documents(&mut labeled_documents).expect("Failed to update phrase models.");
+    } else {
+        let stdin = std::io::stdin();
+        let mut documents: Vec<String> = stdin.lock().lines().map(|s| s.expect("Coulnd't read line")).collect();
+        update_phrase_models(label, &mut documents).expect("Failed to update phrase models");
+    }
 }
 
 #[derive(Deserialize)]
@@ -359,7 +385,6 @@ struct LabeledDocument {
 }
 
 fn count_file(path: &str, label: Option<String>, is_csv: bool) {
-    info!("Is CSV? {}", is_csv);
     if is_csv {
         let mut reader = csv::Reader::from_path(path).expect("Couldn't open CSV");
         let mut labeled_documents: Vec<LabeledDocument> = vec!();
@@ -518,7 +543,7 @@ fn score_ngrams(label_ngrams: &HashMap<Option<String>, HashMap<Vec<String>, i64>
         for (ngram, ngram_count) in ngrams {
             if ngram_valid(ngram) {
                 let ngram_count_across_labels = ngram_counts_across_labels.get(ngram).unwrap_or(&0i64);
-                if let Some(score) = npmi_label_score(&all_tokens_total_count, &this_label_total_count, &ngram_count_across_labels, ngram, ngram_count) {
+                if let Some(score) = npmi_label_score(&all_tokens_total_count, &this_label_total_count, &ngram_count_across_labels, ngram_count) {
                     scores.insert(ngram.clone(), score);
                 } else {
                     skipped += 1;
@@ -603,14 +628,14 @@ fn write_scores(scores: &HashMap<Vec<String>, f64>, label: &Option<String>) {
 /// p_joint = ngram_count / this_label_total_count
 /// pt = this_token_total_count / all_tokens_total_count
 /// pl = this_label_total_count / all_labels_total_count
-fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, ngram_count_across_labels: &i64, ngram: &Vec<String>, ngram_count: &i64) -> Option<f64> {
-    let pj = ngram_count.clone() as f64 / all_tokens_total_count; // this_label_total_count;
+fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, ngram_count_across_labels: &i64, ngram_count: &i64) -> Option<f64> {
+    let pj = ngram_count.clone() as f64 / all_tokens_total_count;
     let pt = ngram_count_across_labels.clone() as f64 / all_tokens_total_count;
     let pl = this_label_total_count / all_tokens_total_count;
 
     if pt > 0f64 && pl > 0f64 && ngram_count >= &MIN_COUNT {
         let score = (pj / pt / pl).ln() / -pj.ln();
-        if score > 0f64 { Some(score) } else { None }
+        if score > MIN_SCORE { Some(score) } else { None }
     } else {
         None
     }
@@ -618,10 +643,10 @@ fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, 
 
 fn npmi_phrase_score(corpus_size: &f64, ngram: &Vec<String>, ngram_count: &i64, ngrams: &HashMap<Vec<String>, i64>) -> Option<f64> {
     if ngram_count > &MIN_COUNT {
-        let left_subgram: Vec<String> = ngram[..ngram.len() - 1].to_owned();//ngram.iter().take(ngrams.len() - 1).map(|s| s.to_string()).collect();
-        let left_unigram: Vec<String> = ngram[..1].to_owned(); //ngram.iter().take(1).map(|s| s.to_string()).collect();
-        let right_subgram: Vec<String> = ngram[1..].to_owned(); //ngram.iter().skip(1).map(|s| s.to_string()).collect();
-        let right_unigram: Vec<String> = ngram[ngram.len() - 1 ..].to_owned(); //ngram.iter().skip(ngrams.len() - 1).map(|s| s.to_string()).collect();}
+        let left_subgram: Vec<String> = ngram[..ngram.len() - 1].to_owned();
+        let left_unigram: Vec<String> = ngram[..1].to_owned();
+        let right_subgram: Vec<String> = ngram[1..].to_owned();
+        let right_unigram: Vec<String> = ngram[ngram.len() - 1 ..].to_owned();
 
         let pj: f64 = ngram_count.clone() as f64 / corpus_size;
         let pau: f64 = ngrams.get(&left_unigram).unwrap_or(ngram_count).clone() as f64 / corpus_size;
@@ -632,7 +657,7 @@ fn npmi_phrase_score(corpus_size: &f64, ngram: &Vec<String>, ngram_count: &i64, 
         let pb = (pbs * pbu).sqrt();
         let score: f64 = (pj / pa / pb).ln() / -pj.ln();
 
-        if score > 0f64 { Some(score) } else { None }
+        if score > MIN_SCORE { Some(score) } else { None }
     } else {
         None
     }
@@ -667,7 +692,8 @@ fn main() {
         )
         (@subcommand serve =>
             (about: "Start API server")
-            (@arg port: -p --port +takes_value "Port to serve on (default 6220)")
+            (@arg port: -p --port +takes_value "Port to listen on (default 6220)")
+            (@arg host: --host +takes_value "Host to listen on (default localhost)")
         )
         (@subcommand export =>
             (about: "Export a model from the ngram counts for a given label")
@@ -678,7 +704,8 @@ fn main() {
 
     if let Some(matches) = matches.subcommand_matches("serve") {
         let port = matches.value_of("port").unwrap_or("6220").parse::<u16>().expect("Couldn't parse port.");
-        serve(port);
+        let host = matches.value_of("host").unwrap_or("localhost");
+        serve(host, port);
     } else if let Some(matches) = matches.subcommand_matches("count") {
         env_logger::init();
         let is_csv = matches.is_present("csv");
