@@ -1,0 +1,2 @@
+[global.databases]
+sqlite_main = { url = "database.sqlite" }

@@ -1,0 +1,47 @@
+language: rust
+cache: cargo
+env:
+  global:
+  - PROJECT_NAME=phrase
+matrix:
+  include:
+  - os: linux
+    rust: nightly
+    env: TARGET=i686-unknown-linux-musl
+  - os: osx
+    rust: nightly
+    env: TARGET=x86_64-apple-darwin
+  - os: linux
+    rust: nightly
+    env: TARGET=x86_64-unknown-linux-musl
+before_install:
+- export PATH="$PATH:$HOME/.cargo/bin"
+install:
+- bash ci/install.sh
+script:
+- bash ci/script.sh
+before_deploy:
+- bash ci/before_deploy.sh
+
+deploy:
+  provider: releases
+  api_key:
+    secure: lc74kz/LAf8tqNCtyH+gth8SHL7/nlW7kU3WWiKopar4EBhBYx1gAEQf1G5h5WrvZESHBVuIRRT7IPF6Z4nBYCablI6Yp1ZibPmWEEAUa3ZRc1iG50NpHRJGIs/cg6lVBDQ1k5I4Ban93QTbcPrq8rCTVDk1Et5f0DDMlabBrfLP4JO3Kch5YjKbdnkZCYOtHeZ4LRqZ3Fo9BqhZOU/P78y10bjjE5N3q7nh4Fy7/L3R2/0CThxh/EFvsIeExg2kj/6I5eBY7cR3yoy8GzmdLPICXbdP5bku5SuvAOjo/u4QIssp1uGa3Wlo23VXd24jf+qvPYmDmt+GI1SZhGW6QJ5dydJMXWyLlgAW1cXzf2/4lRWzsTaTa0mkKroeFguOFXW0Vt04JlKS13AWya4P4mzz67nOLlPhjEfLJfwomw92SXJsWT7OgONlJcLBTzEA7olzoaJpLWeME3RpqAIzJKnmnkWroZ1Xld3+qiNMgwzFhI9ZasYC02/m7h1a9QOTdUM4tf7gYVr765Wdg3k+3vs2xscpkhNQhsMWOp/QM3NJfJh3GsstqOgj0FcxedbcIa0L1wBolRi+sJmBSobq8OkBMWeKsq5ULSAKxHBZY75NR0GFBPG+Leuxi/25EsyUGfKto3WXAMwcu50OR8fGaN/7odfEYC0ZuvViQ9jcc8k=
+  file_glob: true
+  file: ${PROJECT_NAME}-${TRAVIS_TAG}-${TARGET}.*
+  # don't delete the artifacts from previous phases
+  skip_cleanup: true
+  # deploy when a new tag is pushed
+  on:
+    # channel to use to produce the release artifacts
+    # NOTE make sure you only release *once* per target
+    # TODO you may want to pick a different channel
+    condition: $TRAVIS_RUST_VERSION = nightly
+    tags: true
+branches:
+  only:
+  - master
+  - "/^\\d+\\.\\d+\\.\\d+.*$/"
+notifications:
+  email:
+    on_success: never
