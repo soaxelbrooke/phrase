@@ -48,7 +48,7 @@ fn parse_env<T: std::str::FromStr + Clone + std::fmt::Debug>(key: &str, default:
 }
 
 lazy_static! {
-    static ref PRUNE_AT: usize = parse_env("PRUNE_AT", 2_000_000);
+    static ref PRUNE_AT: usize = parse_env("PRUNE_AT", 5_000_000);
     static ref PRUNE_TO: usize = parse_env("PRUNE_TO", 1_000_000);
     static ref MAX_NGRAM: usize = parse_env("MAX_NGRAM", 4);
     static ref MIN_COUNT: i64 = parse_env("MIN_COUNT", 5);
@@ -67,16 +67,16 @@ lazy_static! {
     };
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 struct Document {
     label: Option<String>,
-    body: String,
+    text: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct AnalyzedDocument {
     label: Option<String>,
-    body: String,
+    text: String,
     ngrams: Vec<String>,
 }
 
@@ -98,7 +98,7 @@ struct ApiListLabelsResponse {
 fn analyze_text(text: &String, scores: &HashMap<Vec<String>, f64>, max_ngram: &usize) -> Vec<String> {
     let mut significant_ngrams: Vec<String> = vec!();
 
-    for chunk in CHUNK_SPLIT_REGEX.split(&text.to_lowercase()) {
+    for chunk in CHUNK_SPLIT_REGEX.split(&text) {
         let mut token_queues: Vec<VecDeque<String>> = Vec::new();
         for i in 1..max_ngram+1 {
             token_queues.push(VecDeque::with_capacity(i));
@@ -136,13 +136,13 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
     let max_ngram = MAX_NGRAM.clone();
     let analyzed_docs: Vec<AnalyzedDocument> = data.0.documents.iter().map(|d| {
         let significant_terms: Vec<String> = if let Some(scores) = SCORES.get(&d.label) {
-            analyze_text(&d.body, scores, &max_ngram)
+            analyze_text(&d.text, scores, &max_ngram)
         } else {
             vec!()
         };
         AnalyzedDocument {
             label: d.label.to_owned(),
-            body: d.body.to_owned(),
+            text: d.text.to_owned(),
             ngrams: significant_terms,
         }
     }).collect();
@@ -273,7 +273,7 @@ fn count_ngrams(documents: &Vec<String>) -> HashMap<Vec<String>, i64> {
 fn count_document_ngrams(document: &String, ngrams: &mut HashMap<Vec<String>, i64>, max_ngram: &usize) {
     let mut unique_ngrams: HashSet<Vec<String>> = HashSet::new();
 
-    for chunk in CHUNK_SPLIT_REGEX.split(&document.to_lowercase()) {
+    for chunk in CHUNK_SPLIT_REGEX.split(&document) {
         let mut token_queues: Vec<VecDeque<String>> = Vec::new();
         for i in 1..max_ngram+1 {
             token_queues.push(VecDeque::with_capacity(i));
@@ -448,6 +448,130 @@ fn cmd_count(path: &str, label: Option<String>, is_csv: bool) {
     } else {
         count_file(path, label, is_csv);
     };
+}
+
+fn cmd_transform(input: String, is_csv: bool, label: Option<String>, delim: String, output: Option<String>) {
+    if is_csv && label.is_some() {
+        error!("Cannot specify label and provide a CSV");
+        std::process::exit(1);
+    }
+
+    if is_csv {
+        transform_csv(input, delim, output);
+    } else {
+        transform_standard(input, label, delim, output);
+    }
+}
+
+fn transform_csv(input: String, delim: String, output: Option<String>) {
+    if input == "-" {
+        transform_csv_inner(&mut csv::Reader::from_reader(std::io::stdin()), delim, output);
+    } else {
+        transform_csv_inner(&mut csv::Reader::from_path(input).expect("Couldn't read provided input file"), delim, output);
+    }
+}
+
+fn transform_csv_inner<T: std::io::Read>(csv_reader: &mut csv::Reader<T>, delim: String, output: Option<String>) {
+    if let Some(path) = output {
+        transform_csv_inner_2(csv_reader, &mut csv::Writer::from_path(&path).expect("Couldn't open output file for writing"), &delim);
+    } else {
+        transform_csv_inner_2(csv_reader, &mut csv::Writer::from_writer(std::io::stdout()), &delim);
+    };
+    
+}
+
+fn transform_csv_inner_2<A: std::io::Read, B: std::io::Write>(csv_reader: &mut csv::Reader<A>, csv_writer: &mut csv::Writer<B>, delim: &String) {
+    for result in csv_reader.deserialize() {
+        let document: Document = result.expect("Unable to parse csv document");
+        let transformed = transform_text(delim, &document.label, &document.text);
+        csv_writer.serialize(Document { label: document.label, text: transformed}).expect("Couldn't write CSV output");
+    }
+    csv_writer.flush().expect("Couldn't flush CSV output buffer");
+}
+
+fn transform_standard(input: String, label: Option<String>, delim: String, output: Option<String>) {
+    if let Some(path) = output {
+        if &input == "-" {
+            transform_standard_inner(label, delim, &mut File::create(path).expect("Couldn't read input path"), BufReader::new(std::io::stdin()));
+        } else {
+            transform_standard_inner(label, delim, &mut File::create(path).expect("Couldn't read input path"), BufReader::new(File::open(input).expect("Couldn't open input file for reading")));
+        }
+    } else {
+        if &input == "-" {
+            transform_standard_inner(label, delim, &mut std::io::stdout(), BufReader::new(std::io::stdin()));
+        } else {
+            transform_standard_inner(label, delim, &mut std::io::stdout(), BufReader::new(File::open(input).expect("Couldn't open input file for reading")));
+        }
+    }
+}
+
+fn transform_standard_inner<T: std::io::Write, S: BufRead>(label: Option<String>, delim: String, outbuf: &mut T, inbuf: S) {
+    for line in inbuf.lines() {
+        if let Ok(line) = line {
+            let transformed = transform_text(&delim, &label, &line);
+            write!(outbuf, "{}", transformed).expect("Couldn't write line to output buffer");
+        } else {
+            error!("Couldn't read line");
+        }
+    }
+}
+
+// fn transform_standard_inner(reader: )
+
+/// Eager implementation of phrase transform - as long as the the deque contains a phrase, keep trying to add more tokens
+/// Example:
+///  In:  'Please, use the fax machine to send it.'
+///  Out: 'Please, use the fax_machine to send it.'
+fn transform_text(delim: &String, label: &Option<String>, document: &String) -> String {
+    let max_ngram = MAX_NGRAM.clone();
+    let min_score = MIN_SCORE.clone();
+    let mut result = String::new();
+    let mut current_phrase: VecDeque<String> = VecDeque::with_capacity(max_ngram);
+    let mut last_token_end = 0;
+    for token in TOKEN_REGEX.find_iter(document) {
+        let token_string = token.as_str().to_string();
+        current_phrase.push_back(token_string);
+        let phrase_vec: Vec<String> = current_phrase.iter().map(|s| s.to_owned()).collect();
+
+        if !is_significant(&phrase_vec, label, &min_score) {
+            // Not a phrase - we need to all text between the last write and the current token start
+            // to the result string.
+            while current_phrase.len() > 1 {
+                result.push_str(&current_phrase.pop_front().unwrap());
+                if current_phrase.len() > 1 {
+                    result.push_str(delim);
+                }
+            }
+            result.push_str(&document[last_token_end..token.start()]);
+        } else if current_phrase.len() == max_ngram {
+            // Queue is full, need to flush this phrase
+            // result.push_str(current_phrase.join(delim));
+            while !current_phrase.is_empty() {
+                result.push_str(&current_phrase.pop_front().unwrap());
+                if !current_phrase.is_empty() {
+                    result.push_str(delim);
+                }
+            }
+        }
+        last_token_end = token.end();
+    }
+    while current_phrase.len() > 0 {
+        result.push_str(&current_phrase.pop_front().unwrap());
+        if !current_phrase.is_empty() {
+            result.push_str(delim);
+        }
+    }
+    result.push_str(&document[last_token_end..]);
+    result
+}
+
+fn is_significant(ngram: &Vec<String>, label: &Option<String>, min_score: &f64) -> bool {
+    if let Some(scores) = SCORES.get(label) {
+        if let Some(score) = scores.get(ngram) {
+            return score > &min_score;
+        }
+    }
+    false
 }
 
 fn list_phrase_labels() -> std::io::Result<Vec<Option<String>>> {
@@ -727,8 +851,9 @@ fn main() {
         (@subcommand count =>
             (about: "Count ngrams in provided input text data")
             (@arg input: +required "File to read text data from, use - to pipe from stdin")
-            (@arg label: -l --label +takes_value "Labels to apply to the documents")
-            (@arg csv: --csv "Parse input as CSV.  Use `label` column for label, `text` column to learn phrases.")
+            (@arg label: -l --label +takes_value "Label to apply to the provided documents")
+            (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases")
+            (setting: clap::AppSettings::ArgRequiredElseHelp)
         )
         (@subcommand serve =>
             (about: "Start API server")
@@ -737,8 +862,16 @@ fn main() {
         )
         (@subcommand export =>
             (about: "Export a model from the ngram counts for a given label")
-            (@arg label: "The label for which to export a phrase model.")
-            (@arg output: -o --output +takes_value "Where to write the phrase model.")
+            (@arg label: "The label for which to export a phrase model")
+        )
+        (@subcommand transform =>
+            (about: "Replace detected phrases with delimiter-joiend version: fax machine -> fax_machine")
+            (@arg input: +required "File to read text data from, use - to pipe from stdin")
+            (@arg label: -l --label +takes_value "Label specifying which model to use for transform")
+            (@arg delim: --delim +takes_value "The delimiter to use between tokens (default is _)")
+            (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases")
+            (@arg output: -o --output +takes_value "Where to write the results")
+            (setting: clap::AppSettings::ArgRequiredElseHelp)
         )
     ).get_matches();
 
@@ -763,7 +896,21 @@ fn main() {
     } else if let Some(_matches) = matches.subcommand_matches("export") {
         env_logger::init();
         cmd_export();
-    } else {
-
+    } else if let Some(matches) = matches.subcommand_matches("transform") {
+        env_logger::init();
+        let is_csv = matches.is_present("csv");
+        let label = matches.value_of("label").map(|s| s.to_string());
+        let delim = matches.value_of("delim").map(|s| s.to_string()).unwrap_or("_".to_string());
+        let output = matches.value_of("output").map(|s| s.to_string());
+        assert_label_valid(&label.as_ref());
+        match matches.value_of("input") {
+            Some(input) => {
+                cmd_transform(input.to_string(), is_csv, label, delim, output);
+            },
+            None => {
+                error!("Must provide a file to read text from, or pass - and stream to stdin.");
+                std::process::exit(1);
+            }
+        }
     }
 }

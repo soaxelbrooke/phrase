@@ -27,6 +27,13 @@ $ phrase export
 
 (This will create scored phrase models under `data/`)
 
+### Transforming Text
+
+```
+$ echo 'Quality, choices, and time saving! Moon Invoice has it all.' | phrase transform --label 6000 -
+Quality, choices, and time_saving! Moon_Invoice has it all.
+```
+
 ### Serving Scored Prhase Models
 
 ```
