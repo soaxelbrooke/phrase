@@ -22,6 +22,12 @@ regex = "1"
 csv = "1"
 lazy_static = "1"
 num_cpus = "1.10"
+itertools = "0.8"
+rayon = "1.0"
+
+[dependencies.arrayvec]
+version = "0.4"
+features = ["std", "serde-1"]
 
 [dependencies.rocket_contrib]
 version = "0.4.0"
