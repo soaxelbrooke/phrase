@@ -77,8 +77,8 @@ $ phrase serve
 ```
 
 ```
-$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"label": "6001", "body": "The weather channel is great for when I want to check the weather!"}]}'
-[{"body":"The weather channel is great for when I want to check the weather!","label":"6001","ngrams":["channel","check the weather","weather","weather channel"]}]
+$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"label": "6001", "text": "The weather channel is great for when I want to check the weather!"}]}'
+[{"text":"The weather channel is great for when I want to check the weather!","label":"6001","ngrams":["channel","check the weather","weather","weather channel"]}]
 ```
 
 ### Environment Variables
