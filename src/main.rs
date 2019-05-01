@@ -6,7 +6,6 @@
 #[macro_use] extern crate log;
 #[macro_use] extern crate lazy_static;
 
-extern crate rusqlite;
 extern crate env_logger;
 extern crate rust_stemmers; // see https://crates.io/crates/rust-stemmers
 
