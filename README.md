@@ -70,7 +70,7 @@ $ echo 'Quality, choices, and time saving! Moon Invoice has it all.' | phrase tr
 Quality, choices, and time_saving! Moon_Invoice has it all.
 ```
 
-### Serving Scored Prhase Models
+### Serving Scored Phrase Models
 
 ```
 $ phrase serve
