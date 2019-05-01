@@ -308,7 +308,7 @@ fn update_phrase_models(label: String, documents: &mut Vec<String>) -> std::io::
     Ok(())
 }
 
-fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<LabeledDocument>) -> std::io::Result<()> {
+fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<LabeledDocument>, num_workers: usize) -> std::io::Result<()> {
     let mut groups: HashMap<Option<String>, Vec<String>> = HashMap::new();
     for labeled_document in labeled_documents {
         if groups.contains_key(&labeled_document.label) {
@@ -320,14 +320,27 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Label
     }
 
     debug!("Counting ngrams for labels: {:?}", groups.keys());
+    let labels: Vec<Option<String>> = groups.keys().map(|i| i.to_owned()).collect();
 
-    for (label, documents) in groups.iter_mut() {
+    let mut workers: Vec<std::thread::JoinHandle<_>> = vec!();
+    for label in labels {
         if let Some(label) = label {
             debug!("Counting ngrams for label: {:?}", label);
-            update_phrase_models(label.clone(), documents)?;
+            let mut documents = groups.remove(&Some(label.clone())).expect("Found no documents for label");
+            if workers.len() >= num_workers {
+                workers.remove(0).join().expect("Couldn't join worker thread.");
+            }
+            let handle = std::thread::spawn(move || {
+                update_phrase_models(label.clone(), &mut documents).expect("Thread failed in phrase model update");
+            });
+            workers.push(handle);
         } else {
             warn!("Ignoring unlabeled document.");
         }
+    }
+
+    for handle in workers {
+        handle.join().expect("Couldn't join worker thread");
     }
 
     Ok(())
@@ -510,7 +523,10 @@ fn write_partition_counts(label: &String, ngrams: &NGramCounts) -> std::io::Resu
 
     for (stem, ngram_counts) in ngrams {
         for ngram_count in ngram_counts {
-            rows.push(NGramCountRow { stemmed: ngram_to_str(stem), ngram: ngram_to_str(&ngram_count.ngram), count: ngram_count.count});
+            if ngram_count.count > 1 {
+                // 2/3rds of ngram counts are 1, and don't contirbute meaningfully to scoring
+                rows.push(NGramCountRow { stemmed: ngram_to_str(stem), ngram: ngram_to_str(&ngram_count.ngram), count: ngram_count.count});
+            }
         }
     }
 
@@ -523,7 +539,7 @@ fn write_partition_counts(label: &String, ngrams: &NGramCounts) -> std::io::Resu
     Ok(())
 }
 
-fn count_stdin(label: Option<String>, is_csv: bool) {
+fn count_stdin(label: Option<String>, is_csv: bool, num_workers: usize) {
     if is_csv {
         let mut reader = csv::Reader::from_reader(std::io::stdin());
         let mut labeled_documents: Vec<LabeledDocument> = vec!();
@@ -533,7 +549,7 @@ fn count_stdin(label: Option<String>, is_csv: bool) {
             labeled_documents.push(labeled_document);
         }
 
-        update_phrase_models_from_labeled_documents(&mut labeled_documents).expect("Failed to update phrase models.");
+        update_phrase_models_from_labeled_documents(&mut labeled_documents, num_workers).expect("Failed to update phrase models.");
     } else {
         if let Some(label) = label {
             let stdin = std::io::stdin();
@@ -552,7 +568,7 @@ struct LabeledDocument {
     text: String,
 }
 
-fn count_file(path: &str, label: Option<String>, is_csv: bool) {
+fn count_file(path: &str, label: Option<String>, is_csv: bool, num_workers: usize) {
     if is_csv {
         let mut reader = csv::Reader::from_path(path).expect("Couldn't open CSV");
         let mut labeled_documents: Vec<LabeledDocument> = vec!();
@@ -562,7 +578,7 @@ fn count_file(path: &str, label: Option<String>, is_csv: bool) {
             labeled_documents.push(labeled_document);
         }
 
-        update_phrase_models_from_labeled_documents(&mut labeled_documents).expect("Failed to update phrase models.");
+        update_phrase_models_from_labeled_documents(&mut labeled_documents, num_workers).expect("Failed to update phrase models.");
     } else {
         if let Some(label) = label {
             let file = std::fs::File::open(path).unwrap();
@@ -575,16 +591,16 @@ fn count_file(path: &str, label: Option<String>, is_csv: bool) {
     };
 }
 
-fn cmd_count(path: &str, label: Option<String>, is_csv: bool) {
+fn cmd_count(path: &str, label: Option<String>, is_csv: bool, num_workers: usize) {
     if is_csv && label.is_some() {
         error!("Cannot specify label and provide a CSV");
         std::process::exit(1);
     }
     std::fs::create_dir_all("data").expect("Failed to ensure data directory existence.");
     if path == "-" {
-        count_stdin(label, is_csv);
+        count_stdin(label, is_csv, num_workers);
     } else {
-        count_file(path, label, is_csv);
+        count_file(path, label, is_csv, num_workers);
     };
 }
 
@@ -752,7 +768,7 @@ fn list_score_labels() -> std::io::Result<Vec<Option<String>>> {
     Ok(labels)
 }
 
-fn cmd_export() {
+fn cmd_export(num_workers: usize) {
     // Cases: 
     //  - No phrases learned - error
     //  - One label learned -  can only export phrases?
@@ -772,12 +788,24 @@ fn cmd_export() {
 
     let root_ngrams = label_ngrams.remove(&None).expect("Didn't find root ngrams in loaded ngrams.");
     let labels: Vec<String> = label_ngrams.keys().filter_map(|l| l.clone()).collect();
+    let mut workers: Vec<std::thread::JoinHandle<_>> = vec!();
 
-    for label in labels.iter() {
+    for label in labels {
         if let Some(ngrams) = label_ngrams.remove(&Some(label.clone())) {
-            let scores = score_ngrams(ngrams, &root_ngrams);
-            write_scores(&Some(label.clone()), &scores);
+            let these_root_ngrams = root_ngrams.clone();
+            let worker = std::thread::spawn(move || {
+                let scores = score_ngrams(ngrams, &these_root_ngrams);
+                write_scores(&Some(label.clone()), &scores);
+            });
+            workers.push(worker);
+            if workers.len() >= num_workers {
+                workers.remove(0).join().expect("Couldn't join worker thread.");
+            }
         }
+    }
+
+    for handle in workers {
+        handle.join().expect("Couldn't join worker thread");
     }
 
     write_scores(&None, &score_root_ngrams(root_ngrams));
@@ -1017,6 +1045,7 @@ fn main() {
             (@arg input: +required "File to read text data from, use - to pipe from stdin")
             (@arg label: -l --label +takes_value "Label to apply to the provided documents")
             (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases")
+            (@arg workers: --workers -w +takes_value "Number of workers to use, defaults to number of system threads divided by two.")
             (setting: clap::AppSettings::ArgRequiredElseHelp)
         )
         (@subcommand serve =>
@@ -1026,6 +1055,7 @@ fn main() {
         )
         (@subcommand export =>
             (about: "Export a model from the ngram counts for a given label")
+            (@arg workers: --workers -w +takes_value "Number of workers to use, defaults to number of system threads divided by two.")
             (@arg label: "The label for which to export a phrase model")
         )
         (@subcommand transform =>
@@ -1052,10 +1082,11 @@ fn main() {
         env_logger::init();
         let is_csv = matches.is_present("csv");
         let label = matches.value_of("label").map(|s| s.to_string());
+        let num_workers: usize = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")).unwrap_or(num_cpus::get() / 2);
         assert_label_valid(&label.as_ref());
         match matches.value_of("input") {
             Some(path) => {
-                cmd_count(path, label, is_csv);
+                cmd_count(path, label, is_csv, num_workers);
             },
             None => {
                 error!("Must provide a file to read text from, or pass - and stream to stdin.");
@@ -1064,7 +1095,8 @@ fn main() {
         }
     } else if let Some(_matches) = matches.subcommand_matches("export") {
         env_logger::init();
-        cmd_export();
+        let num_workers: usize = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")).unwrap_or(num_cpus::get() / 2);
+        cmd_export(num_workers);
     } else if let Some(matches) = matches.subcommand_matches("transform") {
         env_logger::init();
         let is_csv = matches.is_present("csv");
