@@ -39,7 +39,7 @@ run_test_suite() {
     fi
 
     cargo build --target $TARGET --verbose
-    cargo test --target $TARGET
+    # cargo test --target $TARGET
 
     # sanity check the file type
     file target/$TARGET/debug/phrase
