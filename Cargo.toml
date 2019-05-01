@@ -1,6 +1,6 @@
 [package]
 name = "phrase"
-version = "0.2.2"
+version = "0.2.3"
 description = "Fast significant term and phrase learning and labeling"
 authors = ["Stuart Axelbrooke <stuart@axelbrooke.com>"]
 license = "Unlicense/MIT"
