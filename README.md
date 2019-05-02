@@ -33,41 +33,41 @@ $ phrase export
 $ phrase show -n 3
 
 Label=6000
-stemmed,ngram,score
-itimepunch plus,iTimePunch Plus,0.5478097727335406
-black and white,black and white,0.5301331992513779
-caller id,caller ID,0.5289939800990554
+hash,ngram,score
+4727477585106156155,iTimePunch Plus,0.55749203444841
+12483914742025992948,Crew Lounge,0.5479129370086021
+11796198430323558093,black and white,0.5385891753319711
 
 Label=6005
-stemmed,ngram,score
-seek arrang,seeking arrangement,0.5393761374868443
-older women,older women,0.5387631792730164
-younger men,younger men,0.5276998455446196
+hash,ngram,score
+5028985570365810872,seeking arrangement,0.555805973833051
+3452512271924928155,older women,0.5492325901167289
+1856639309753967090,younger men,0.5380823555018927
 
 Label=6001
-stemmed,ngram,score
-lil bub,Lil Bub,0.5918180152617087
-dark sky,Dark Sky,0.549581815673372
-zip code,zip code,0.5164957628490037
+hash,ngram,score
+16860550243828630957,Lil Bub,0.5476212238386382
+15429443734362810908,Dark Sky,0.538136969505567
+17787744274931639214,zip code,0.5126091671796332
 
 Label=6003
-stemmed,ngram,score
-road to hana,road to Hana,0.595772467438227
-happiest place on earth,happiest place on earth,0.5660341461243589
-north shore,North Shore,0.5590151652161709
+hash,ngram,score
+16827980792972836770,Na Pali,0.6170795527743764
+4230405495922241687,road to Hana,0.5618339661289787
+8724945449383040970,fast pass,0.5496929588451972
 
 Label=6009
-stemmed,ngram,score
-new yorker,New Yorker,0.510585395386124
-sleep timer,sleep timer,0.49587662290496715
-deal breaker,deal breaker,0.48809862161808737
+hash,ngram,score
+3178089391134982486,New Yorker,0.5142287028163096
+18070968419002659619,long form,0.5096737783425647
+16180697492236521925,sleep timer,0.5047391214969927
 ```
 
 ### Transforming Text
 
 ```
-$ echo 'Quality, choices, and time saving! Moon Invoice has it all.' | phrase transform --label 6000 -
-Quality, choices, and time_saving! Moon_Invoice has it all.
+$ echo 'Love the black and white! Moon Invoice has it all.' | phrase transform --label 6000 -
+Love the black_and_white! Moon_Invoice has it all.
 ```
 
 ### Serving Scored Phrase Models
@@ -81,7 +81,17 @@ $ curl -XPOST localhost:6220/analyze -d '{"documents": [{"label": "6001", "text"
 [{"text":"The weather channel is great for when I want to check the weather!","label":"6001","ngrams":["channel","check the weather","weather","weather channel"]}]
 ```
 
-### Environment Variables
+## Labels
+
+Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.
+
+Providing labels for your data causes `phrase` to count them into separate bags per label, and during export allows it to calculate an extra significance score based on label (instead of just co-occurance).  This means that a phrase that is unique to that label is much more likely to be picked up than if it was being overshadowed in unlabeled data.
+
+An example of a good label would be app category, as apps in each category are related, and customer reviews talk about similar subjects.
+
+## Environment Variables
+
+A variety of environment variables can be used:
 
 `LANG` - Determines the stemmer language to use from this.  Should be set automatically on Unix systems, but can be overridden.
 
@@ -95,7 +105,7 @@ $ curl -XPOST localhost:6220/analyze -d '{"documents": [{"label": "6001", "text"
 
 `PRUNE_TO` - Controls what size ngram mappings are pruned to during pruning.  Also sets the number of ngrams that are saved after counting (sorted by count).
 
-`MAX_NGRAM` - The highest ngram size to count to, higher values cause slower counting, but allow for more specific and longer phrases. Default is five.
+`MAX_NGRAM` - The highest ngram size to count to, higher values cause slower counting, but allow for more specific and longer phrases. Default is 5.
 
 `MIN_COUNT` - The minimum ngram count for a phrase or token to be considered significant.  Default is 5.
 

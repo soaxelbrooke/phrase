@@ -1119,7 +1119,7 @@ fn main() {
     } else if let Some(matches) = matches.subcommand_matches("count") {
         env_logger::init();
         let is_csv = matches.is_present("csv");
-        let label = matches.value_of("label").map(|s| s.to_string());
+        let label = Some(matches.value_of("label").unwrap_or("default").to_string());
         if let Some(num_workers) = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")) {
             std::env::set_var("RAYON_NUM_THREADS", num_workers.to_string());
         }
