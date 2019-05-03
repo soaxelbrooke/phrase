@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img width="300" height="300" title="phrase" src="https://user-images.githubusercontent.com/2815794/57114882-6301ca00-6d00-11e9-9e8e-08e4864d3378.png">
+  <img width="256" height="256" title="phrase" src="https://user-images.githubusercontent.com/2815794/57115077-811bfa00-6d01-11e9-8f3b-b49be93a35e1.png">
 </p>
 
 A tool for learning significant phrase/term models, and efficiently labeling with them.
