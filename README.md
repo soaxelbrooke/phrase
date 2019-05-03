@@ -87,6 +87,29 @@ $ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "pos
 [{"labels":["6001","positive"],"ngrams":["I want","I want to","I want to check","Weather Channel","channel","check","check the weather","want to","want to check","want to check the weather","weather","when I want","when I want to"],"text":"The weather channel is great for when I want to check the weather!"}]
 ```
 
+### API Routes
+
+**GET /labels** - list all available labels for extraction/labeling.
+
+```
+$ curl localhost:6220/labels
+{"labels":["negative","positive","6000","6005","6001","6003","neutral","6009",null]}
+```
+
+**POST /analyze** - identifies all significant phrases and terms found in the provided documents.
+
+```
+$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "positive", null], "text": "The weather channel is great for when I want to check the weather!"}]}'
+[{"labels":["6001","positive"],"ngrams":["I want","I want to","I want to check","Weather Channel","channel","check","check the weather","want to","want to check","want to check the weather","weather","when I want","when I want to"],"text":"The weather channel is great for when I want to check the weather!"}]
+```
+
+**POST /transform** - eagerly replaces the longest phrases found in the provided documents.
+
+```
+curl -XPOST localhost:6220/transform -d '{"documents": [{"label": "6001", "text": "The weather channel is great for when I want to check the weather!"}]}'
+[{"label":"6001","text":"The Weather_Channel is great for when I_want_to check_the_weather!"}]
+```
+
 ## Labels
 
 Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.  Labels are generally provided in the `label` column of the input CSV, or with the `--label` command line argument.

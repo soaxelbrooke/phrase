@@ -66,7 +66,7 @@ struct NGramScoreRow {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct Document {
-    labels: Option<Vec<String>>,
+    labels: Option<Vec<Option<String>>>,
     text: String,
 }
 
@@ -86,6 +86,11 @@ struct AnalyzedDocument {
 #[derive(Deserialize, Debug, Clone)]
 struct ApiAnalyzeRequest {
     documents: Vec<Document>
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct ApiTransformRequest {
+    documents: Vec<TransformDocument>
 }
 
 #[derive(Serialize)]
@@ -202,6 +207,7 @@ fn ngram_hash_vec(token_vec: &Vec<String>) -> NGramHash {
     hasher.finish()
 }
 
+/// Hashes an ngram, does stem for you.
 fn hash_ngram(ngram: &NGram) -> NGramHash {
     let ngram_delim = NGRAM_DELIM.clone();
     ngram_hash_vec(&ngram.split(&ngram_delim).map(|s| STEMMER.stem(&s.to_lowercase()).to_string()).collect())
@@ -251,7 +257,7 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
         let mut labels: Vec<Option<String>> = vec!();
         if let Some(doc_labels) = &d.labels {
             for label in doc_labels {
-                labels.push(Some(label.to_owned()));
+                labels.push(label.to_owned());
             }
         } else {
             labels = vec!(None);
@@ -272,6 +278,22 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
     json!(analyzed_docs)
 }
 
+#[post("/transform?<delim>", data = "<data>")]
+fn api_transform(delim: Option<String>, data: Json<ApiTransformRequest>) -> JsonValue {
+    let mut transformed_docs: Vec<TransformDocument> = vec!();
+    let delim = delim.unwrap_or("_".to_string());
+
+    for doc in data.0.documents {
+        let transformed = transform_text(&delim, &doc.label, &doc.text);
+        transformed_docs.push(TransformDocument {
+            text: transformed,
+            label: doc.label.clone(),
+        });
+    }
+
+    json!(transformed_docs)
+}
+
 #[get("/labels")]
 fn api_list_labels() -> JsonValue {
     if let Ok(labels) = list_score_labels() {
@@ -286,7 +308,7 @@ fn serve(host: &str, port: u16) {
     let config = rocket::Config::build(rocket::config::Environment::Development)
         .port(port).address(host).finalize().expect("Couldn't create config.");
     rocket::custom(config)
-        .mount("/", routes![api_list_labels, api_analyze])
+        .mount("/", routes![api_list_labels, api_analyze, api_transform])
         .launch();
 }
 
@@ -727,6 +749,25 @@ fn transform_text(delim: &String, label: &Option<String>, document: &String) -> 
                 for _idx in 0..tokens_written {
                     current_phrase.pop_front();
                 }
+            }
+        }
+    }
+
+    // Handle the last few tokens (which may be a phrase!)
+    while !current_phrase.is_empty() {
+        result.push_str(&document[last_token_end..current_phrase.get(0).expect("Should have been able to get head token").start()]);
+        let mut stem_window: Vec<String> = current_phrase.iter().map(|m| re_match_stem(m.clone())).collect();
+        let tokens_written = allocate_ngrams(&mut stem_window, &mut result, label, &min_score, delim);
+        if tokens_written == 0 {
+            // No tokens were written, need to write the first one
+            let first_token = current_phrase.pop_front().unwrap();
+            result.push_str(first_token.as_str());
+            last_token_end = first_token.end();
+        } else {
+            // Tokens were written, we need to write the chars between the last written token and the first token still in the queue
+            last_token_end = current_phrase.get(tokens_written - 1).expect("Should have been able to get the last written token").end();
+            for _idx in 0..tokens_written {
+                current_phrase.pop_front();
             }
         }
     }
