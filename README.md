@@ -82,10 +82,7 @@ The Weather_Channel is great for when I_want_to check_the_weather!
 $ phrase serve
 ```
 
-```
-$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "positive"], "text": "The weather channel is great for when I want to check the weather!"}]}'
-[{"labels":["6001","positive"],"ngrams":["I want","I want to","I want to check","Weather Channel","channel","check","check the weather","want to","want to check","want to check the weather","weather","when I want","when I want to"],"text":"The weather channel is great for when I want to check the weather!"}]
-```
+It also accepts `--port` and `--host` parameters.
 
 ### API Routes
 
