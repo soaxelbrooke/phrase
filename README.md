@@ -67,7 +67,7 @@ hash,ngram,score
 ...
 ```
 
-`hash` is the hash of the stemmed N-gram, `ngram` is the canonical version of the n-gram used for display purposes.  For phrases, `score` is a combination of collocation NPMI and n-gram-label NPMI, and is only n-gram-label NPMI for single tokens.
+`hash` is the hash of the stemmed n-gram, `ngram` is the canonical version of the n-gram used for display purposes.  For phrases, `score` is a combination of NPMI(phrase, tokens) and NPMI(n-gram, label), and is only NPMI(n-gram, label) for single tokens.
 
 ### Transforming Text
 
