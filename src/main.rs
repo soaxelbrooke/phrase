@@ -569,15 +569,51 @@ fn write_partition_counts(label: &Option<String>, ngrams: &NGramCounts) -> std::
     Ok(())
 }
 
-fn count_stdin(labels: Option<Vec<String>>, is_csv: bool) {
+fn read_documents_from_csv<R: std::io::Read>(csv_reader: &mut csv::Reader<R>, text_fields: &Vec<String>, label_fields: &Vec<String>) -> Vec<LabeledDocument> {
+    let headers = csv_reader.headers().expect("Couldn't get CSV headers.");
+    let label_delim = LABEL_DELIM.clone();
+    let mut text_idxs: Vec<usize> = vec!();
+    let mut label_idxs: Vec<usize> = vec!();
+    for (idx, header) in headers.iter().enumerate() {
+        if text_fields.contains(&header.to_string()) {
+            text_idxs.push(idx);
+        }
+        if label_fields.contains(&header.to_string()) {
+            label_idxs.push(idx);
+        }
+    }
+    if text_idxs.is_empty() {
+        error!("Didn't find text_field in the CSV header!");
+        std::process::exit(1);
+    }
+    if label_idxs.is_empty() {
+        error!("Didn't find label_field in the CSV header!");
+        std::process::exit(1);
+    }
+    csv_reader.records().map(|record| {
+        let record = record.expect("Couldn't parse row");
+        let mut label_str: String = String::new();
+        for label_idx in label_idxs.iter() {
+            label_str.push_str(record.get(label_idx.clone()).unwrap());
+            label_str.push(label_delim);
+        }
+        let mut text: String = String::new();
+        for text_idx in text_idxs.iter() {
+            text.push_str(record.get(text_idx.clone()).unwrap());
+            text.push('\n');
+        }
+        label_str.pop();
+        LabeledDocument {
+            text: text, 
+            label: if label_str.is_empty() { None } else { Some(label_str) },
+        }
+    }).collect()
+}
+
+fn count_stdin(labels: Option<Vec<String>>, is_csv: bool, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     if is_csv {
         let mut reader = csv::Reader::from_reader(std::io::stdin());
-        let mut labeled_documents: Vec<LabeledDocument> = vec!();
-
-        for result in reader.deserialize() {
-            let labeled_document: LabeledDocument = result.expect("failed to parse line");
-            labeled_documents.push(labeled_document);
-        }
+        let mut labeled_documents: Vec<LabeledDocument> = read_documents_from_csv(&mut reader, &text_fields.unwrap_or(vec!("text".to_string())), &label_fields.unwrap_or(vec!("label".to_string())));
 
         update_phrase_models_from_labeled_documents(&mut labeled_documents).expect("Failed to update phrase models.");
     } else {
@@ -599,10 +635,10 @@ struct LabeledDocument {
     text: String,
 }
 
-fn count_file(path: &str, labels: Option<Vec<String>>, is_csv: bool) {
+fn count_file(path: &str, labels: Option<Vec<String>>, is_csv: bool, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     if is_csv {
         let mut reader = csv::Reader::from_path(path).expect("Couldn't open CSV");
-        let mut labeled_documents: Vec<LabeledDocument> = vec!();
+        let mut labeled_documents: Vec<LabeledDocument> = read_documents_from_csv(&mut reader, &text_fields.unwrap_or(vec!("text".to_string())), &label_fields.unwrap_or(vec!("label".to_string())));
 
         for result in reader.deserialize() {
             let labeled_document: LabeledDocument = result.expect("failed to parse line");
@@ -623,16 +659,22 @@ fn count_file(path: &str, labels: Option<Vec<String>>, is_csv: bool) {
     };
 }
 
-fn cmd_count(path: &str, labels: Option<Vec<String>>, is_csv: bool) {
+fn cmd_count(path: &str, labels: Option<Vec<String>>, is_csv: bool, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     if is_csv && labels.is_some() {
         error!("Cannot specify label and provide a CSV");
+        std::process::exit(1);
+    } else if !is_csv && text_fields.is_some() {
+        error!("Can't specify text field for non-CSV input");
+        std::process::exit(1);
+    } else if !is_csv && label_fields.is_some() {
+        error!("Can't specify label field for non-CSV input");
         std::process::exit(1);
     }
     std::fs::create_dir_all("data").expect("Failed to ensure data directory existence.");
     if path == "-" {
-        count_stdin(labels, is_csv);
+        count_stdin(labels, is_csv, text_fields, label_fields);
     } else {
-        count_file(path, labels, is_csv);
+        count_file(path, labels, is_csv, text_fields, label_fields);
     };
 }
 
@@ -1123,7 +1165,9 @@ fn main() {
             (about: "Count ngrams in provided input text data")
             (@arg input: +required "File to read text data from, use - to pipe from stdin")
             (@arg label: -l --label +takes_value ... "Label to apply to the provided documents")
-            (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases")
+            (@arg labelfield: --labelfield +takes_value ... "The field to use for labeling text")
+            (@arg textfield: --textfield +takes_value ... "The text field to use to learn phrases")
+            (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases, or use `labelfield` or `textfield` to specify columns to take labels or texts from.")
             (@arg workers: --workers -w +takes_value "Number of workers to use, defaults to number of system threads.")
             (setting: clap::AppSettings::ArgRequiredElseHelp)
         )
@@ -1163,6 +1207,8 @@ fn main() {
         if let Some(num_workers) = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")) {
             std::env::set_var("RAYON_NUM_THREADS", num_workers.to_string());
         }
+        let text_fields: Option<Vec<String>> = matches.values_of("textfield").map(|v| v.map(|s| s.to_string()).collect());
+        let label_fields: Option<Vec<String>> = matches.values_of("labelfield").map(|v| v.map(|s| s.to_string()).collect());
         if let Some(labels) = &labels {
             for label in labels.iter() {
                 assert_label_valid(&Some(label));
@@ -1170,7 +1216,7 @@ fn main() {
         }
         match matches.value_of("input") {
             Some(path) => {
-                cmd_count(path, labels, is_csv);
+                cmd_count(path, labels, is_csv, text_fields, label_fields);
             },
             None => {
                 error!("Must provide a file to read text from, or pass - and stream to stdin.");
