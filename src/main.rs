@@ -1162,9 +1162,8 @@ fn main() {
         let mut labels: Vec<Option<String>> = vec!();
         if let Some(found_labels) = matches.values_of("label") {
             labels.extend(found_labels.map(|l| Some(l.to_string())));
-        }
-        if std::path::Path::new("data/scores_default.csv").exists() {
-            labels.push(None);
+        } else {
+            labels.extend(list_score_labels().expect("Couldn't list labels"));
         }
         let num: usize = matches.value_of("num").map(|s| s.parse::<usize>().expect("Couldn't parse --num")).unwrap_or(5);
         cmd_show(labels, num);
