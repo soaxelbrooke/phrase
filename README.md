@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img width="256" height="256" title="phrase" src="https://user-images.githubusercontent.com/2815794/57146626-a39e2980-6d7a-11e9-87d7-8d1a25aa6837.png">
+  <img width="256" height="256" title="phrase" src="https://user-images.githubusercontent.com/2815794/57149171-faf2c880-6d7f-11e9-901f-3010f9abc443.png">
 </p>
 
 A tool for learning significant phrase/term models, and efficiently labeling with them.
@@ -20,6 +20,14 @@ In general, using `phrase` falls into 3 steps:
 N-gram counting is done continuously, providing batches of documents as they come in. Model export reads all n-gram counts so far and calculates mutual information-based collocations - you can then deploy the models by shipping the binary and `data/scores_*` files to a server.  Labeling (identifying all significant terms and phrases in text) or transforming (eager replace of longest found phrases in text) can be done either via the CLI or the web server. [Providing labels](#labels) for documents is not necessary for learning phrases, but does help, and allows for significant term labeling also.
 
 ### Training a phrase model
+
+This example uses the `assets/reviews.csv` data in the repo, 10k app reviews:
+
+```
+$ head -2 assets/reviews.csv 
+label,text
+6000;positive,"Woww! Moon Invoice is just so amazing. I don’t think any such app exists that works so wonderfully. I am awestruck by the experience."
+```
 
 First, you need to count ngrams from your data:
 
@@ -81,7 +89,7 @@ $ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "pos
 
 ## Labels
 
-Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.  Labels are generally provided in the `labels` column of the input CSV, or with the `--label` command line argument.
+Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.  Labels are generally provided in the `label` column of the input CSV, or with the `--label` command line argument.
 
 Providing labels for your data causes `phrase` to count them into separate bags per label, and during export allows it to calculate an extra significance score based on label (instead of just co-occurance).  This means that a phrase that is unique to that label is much more likely to be picked up than if it was being overshadowed in unlabeled data.
 
@@ -130,6 +138,6 @@ A variety of environment variables can be used:
 
 `NGRAM_DELIM` - The delimiter used to join phrases when using the `transform` subcommand.  Default is `_`: `fax machine` -> `fax_machine`.
 
-## References
+## Citations
 
 [Normalized (Pointwise) Mutual Information in Collocation Extraction - Gerlof Bouma](https://svn.spraakdata.gu.se/repos/gerlof/pub/www/Docs/npmi-pfd.pdf)
