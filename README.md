@@ -159,7 +159,7 @@ A variety of environment variables can be used:
 
 `MAX_EXPORT` - The maximum size of exported models, per label.
 
-`NGRAM_DELIM` - The delimiter used to join phrases when using the `transform` subcommand.  Default is `_`: `fax machine` -> `fax_machine`.
+`NGRAM_DELIM` - The delimiter used to join phrases when counting and scoring.  Default is ` `.
 
 ## Citations
 
