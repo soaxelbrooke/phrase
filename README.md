@@ -72,8 +72,8 @@ hash,ngram,score
 ### Transforming Text
 
 ```
-$ echo 'Love the black and white! Moon Invoice has it all.' | phrase transform --label 6000 -
-Love the black_and_white! Moon_Invoice has it all.
+$ echo "The weather channel is great for when I want to check the weather!" | phrase transform --label 6001 -
+The Weather_Channel is great for when I_want_to check_the_weather!
 ```
 
 ### Serving Scored Phrase Models
