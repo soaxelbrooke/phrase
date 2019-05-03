@@ -79,8 +79,8 @@ $ phrase serve
 ```
 
 ```
-$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"label": "6001", "text": "The weather channel is great for when I want to check the weather!"}]}'
-[{"text":"The weather channel is great for when I want to check the weather!","label":"6001","ngrams":["channel","check the weather","weather","weather channel"]}]
+$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "positive"], "text": "The weather channel is great for when I want to check the weather!"}]}'
+[{"labels":["6001","positive"],"ngrams":["I want","I want to","I want to check","Weather Channel","channel","check","check the weather","want to","want to check","want to check the weather","weather","when I want","when I want to"],"text":"The weather channel is great for when I want to check the weather!"}]
 ```
 
 ## Labels
@@ -90,6 +90,21 @@ Labels are used to learn significant single tokens and to aid in scoring signifi
 Providing labels for your data causes `phrase` to count them into separate bags per label, and during export allows it to calculate an extra significance score based on label (instead of just co-occurance).  This means that a phrase that is unique to that label is much more likely to be picked up than if it was being overshadowed in unlabeled data.
 
 An example of a good label would be app category, as apps in each category are related, and customer reviews talk about similar subjects.
+
+## Performance
+
+It's fast.
+
+Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Ubuntu Intel i7:
+
+|Task|Tokens per Second per Thread|
+|----|--------------------------|
+|Counting n-grams|298,286|
+|Exporting scored models|151,144|
+|Labeling significant terms|354,395|
+|Phrase transformation|345,957|
+
+* Exports do not gain much from parallelization
 
 ## Environment Variables
 
