@@ -70,12 +70,6 @@ struct Document {
     text: String,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
-struct TransformDocument {
-    label: Option<String>,
-    text: String,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AnalyzedDocument {
     labels: Vec<Option<String>>,
@@ -90,7 +84,7 @@ struct ApiAnalyzeRequest {
 
 #[derive(Deserialize, Debug, Clone)]
 struct ApiTransformRequest {
-    documents: Vec<TransformDocument>
+    documents: Vec<Document>
 }
 
 #[derive(Serialize)]
@@ -101,6 +95,95 @@ struct ErrorResponse {
 #[derive(Serialize)]
 struct ApiListLabelsResponse {
     labels: Vec<Option<String>>
+}
+
+#[derive(PartialEq, Debug, Clone)]
+enum ParseMode {
+    CSV,
+    JSON,
+    PlainText
+}
+
+impl std::str::FromStr for ParseMode {
+    type Err = ();
+    fn from_str(s: &str) -> Result<ParseMode, ()> {
+        match &s.to_lowercase()[..] {
+            "csv" => Ok(ParseMode::CSV),
+            "json" => Ok(ParseMode::JSON),
+            "plain" => Ok(ParseMode::PlainText),
+            "plaintext" => Ok(ParseMode::PlainText),
+            _ => Err(()),
+        }
+    }
+}
+
+enum Input {
+    Standard(std::io::Stdin),
+    File(std::fs::File),
+}
+
+impl Input {
+    fn stdin() -> Input {
+        Input::Standard(std::io::stdin())
+    }
+
+    fn file(path: String) -> std::io::Result<Input> {
+        Ok(Input::File(std::fs::File::open(path)?))
+    }
+
+    fn from_arg(arg: Option<String>) -> std::io::Result<Input> {
+        Ok(match arg {
+            None       => Input::stdin(),
+            Some(path) => if path == "-" { Input::stdin() } else { Input::file(path)? },
+        })
+    }
+}
+
+impl std::io::Read for Input {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match *self {
+            Input::Standard(ref mut s) => s.read(buf),
+            Input::File(ref mut f)     => f.read(buf),
+        }
+    }
+}
+
+enum Output {
+    Standard(std::io::Stdout),
+    File(std::fs::File),
+}
+
+impl Output {
+    fn stdout() -> Output {
+        Output::Standard(std::io::stdout())
+    }
+
+    fn file(path: String) -> std::io::Result<Output> {
+        Ok(Output::File(std::fs::File::create(path)?))
+    }
+
+    fn from_arg(arg: Option<String>) -> std::io::Result<Output> {
+        Ok(match arg {
+            None       => Output::stdout(),
+            Some(path) => if path == "-" { Output::stdout() } else { Output::file(path)? },
+        })
+    }
+}
+
+impl std::io::Write for Output {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match *self {
+            Output::Standard(ref mut s) => s.write(buf),
+            Output::File(ref mut f)     => f.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match *self {
+            Output::Standard(ref mut s) => s.flush(),
+            Output::File(ref mut f)     => f.flush(),
+        }
+    }
 }
 
 fn parse_env<T: std::str::FromStr + Clone + std::fmt::Debug>(key: &str, default: T) -> T {
@@ -280,14 +363,15 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
 
 #[post("/transform?<delim>", data = "<data>")]
 fn api_transform(delim: Option<String>, data: Json<ApiTransformRequest>) -> JsonValue {
-    let mut transformed_docs: Vec<TransformDocument> = vec!();
+    let mut transformed_docs: Vec<Document> = vec!();
     let delim = delim.unwrap_or("_".to_string());
 
     for doc in data.0.documents {
-        let transformed = transform_text(&delim, &doc.label, &doc.text);
-        transformed_docs.push(TransformDocument {
+        let labels = doc.labels.unwrap_or(vec!(None));
+        let transformed = transform_text(&delim, &labels, doc.text);
+        transformed_docs.push(Document {
             text: transformed,
-            label: doc.label.clone(),
+            labels: Some(labels),
         });
     }
 
@@ -369,21 +453,10 @@ fn update_phrase_model(label: Option<String>, documents: &mut Vec<String>) -> st
     Ok(())
 }
 
-fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<LabeledDocument>) -> std::io::Result<()> {
-    let label_delim = LABEL_DELIM.clone();
+fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Document>) -> std::io::Result<()> {
     let mut groups: HashMap<Option<String>, Vec<String>> = HashMap::new();
     for labeled_document in labeled_documents.iter() {
-        let labels: Vec<Option<String>> = match &labeled_document.label {
-            None => vec!(None),
-            Some(label) => {
-                if label == "" {
-                    vec!(None)
-                } else {
-                    label.split(label_delim).map(|s| Some(s.to_string())).collect()
-                }
-            },
-        };
-        for label in labels {
+        for label in labeled_document.labels.clone().unwrap_or(vec!(None)).iter() {
             if let Some(group) = groups.get_mut(&label) {
                 group.push(labeled_document.text.clone());
             } else {
@@ -569,181 +642,204 @@ fn write_partition_counts(label: &Option<String>, ngrams: &NGramCounts) -> std::
     Ok(())
 }
 
-fn read_documents_from_csv<R: std::io::Read>(csv_reader: &mut csv::Reader<R>, text_fields: &Vec<String>, label_fields: &Vec<String>) -> Vec<LabeledDocument> {
-    let headers = csv_reader.headers().expect("Couldn't get CSV headers.");
-    let label_delim = LABEL_DELIM.clone();
-    let mut text_idxs: Vec<usize> = vec!();
-    let mut label_idxs: Vec<usize> = vec!();
-    for (idx, header) in headers.iter().enumerate() {
-        if text_fields.contains(&header.to_string()) {
-            text_idxs.push(idx);
-        }
-        if label_fields.contains(&header.to_string()) {
-            label_idxs.push(idx);
+fn read_documents(buf: &mut std::io::Read, mode: &ParseMode, text_fields: &Vec<String>, label_fields: &Vec<String>, labels: Vec<Option<String>>) -> Result<Vec<Document>, ()> {
+    match mode {
+        ParseMode::CSV => read_documents_from_csv(buf, text_fields, label_fields),
+        ParseMode::JSON => read_documents_from_json(buf, text_fields, label_fields),
+        ParseMode::PlainText => {
+            read_documents_from_plain(buf, labels).map_err(|err| {
+                error!("Failed to parse plaintext due to {:?}", err);
+                ()
+            })
         }
     }
+}
+
+fn header_indexes<R: std::io::Read>(reader: &mut csv::Reader<R>, fields: &Vec<String>) -> Vec<usize> {
+    let mut indexes = vec!();
+    for (idx, header) in reader.headers().expect("Couldn't read CSV reader header").iter().enumerate() {
+        if fields.contains(&header.to_string()) {
+            indexes.push(idx);
+        }
+    }
+    indexes
+}
+
+fn read_documents_from_csv(buf: &mut std::io::Read, text_fields: &Vec<String>, label_fields: &Vec<String>) -> Result<Vec<Document>, ()> {
+    let mut csv_reader = csv::Reader::from_reader(buf);
+    let text_idxs: Vec<usize> = header_indexes(&mut csv_reader, text_fields);
+    let label_idxs: Vec<usize> = header_indexes(&mut csv_reader, label_fields);
     if text_idxs.is_empty() {
         error!("Didn't find text_field in the CSV header!");
-        std::process::exit(1);
+        return Err(());
     }
     if label_idxs.is_empty() {
         error!("Didn't find label_field in the CSV header!");
-        std::process::exit(1);
+        return Err(());
     }
-    csv_reader.records().map(|record| {
+    let mut documents = vec!();
+    for record in csv_reader.records() {
         let record = record.expect("Couldn't parse row");
-        let mut label_str: String = String::new();
-        for label_idx in label_idxs.iter() {
-            label_str.push_str(record.get(label_idx.clone()).unwrap());
-            label_str.push(label_delim);
-        }
-        let mut text: String = String::new();
+        let labels: Vec<Option<String>> = label_idxs.iter().map(|idx| record.get(idx.clone()).map(|s| s.to_string())).collect();
         for text_idx in text_idxs.iter() {
-            text.push_str(record.get(text_idx.clone()).unwrap());
-            text.push('\n');
+            if let Some(text) = record.get(text_idx.clone()) {
+                documents.push(Document {
+                    text: text.to_string(), 
+                    labels: Some(labels.clone()),
+                });
+            } else {
+                error!("Couldn't get column {} from CSV", text_idx);
+            }
         }
-        label_str.pop();
-        LabeledDocument {
-            text: text, 
-            label: if label_str.is_empty() { None } else { Some(label_str) },
-        }
-    }).collect()
+        
+    }
+    Ok(documents)
 }
 
-fn count_stdin(labels: Option<Vec<String>>, is_csv: bool, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
-    if is_csv {
-        let mut reader = csv::Reader::from_reader(std::io::stdin());
-        let mut labeled_documents: Vec<LabeledDocument> = read_documents_from_csv(&mut reader, &text_fields.unwrap_or(vec!("text".to_string())), &label_fields.unwrap_or(vec!("label".to_string())));
-
-        update_phrase_models_from_labeled_documents(&mut labeled_documents).expect("Failed to update phrase models.");
-    } else {
-        let stdin = std::io::stdin();
-        let mut documents: Vec<String> = stdin.lock().lines().map(|s| s.expect("Coulnd't read line")).collect();
-        if let Some(labels) = labels {
-            for label in labels.iter() {
-                update_phrase_model(Some(label.clone()), &mut documents).expect("Failed to update phrase models");
+fn read_documents_from_json(buf: &mut std::io::Read, text_fields: &Vec<String>, label_fields: &Vec<String>) -> Result<Vec<Document>, ()> {
+    let reader = BufReader::new(buf);
+    let mut documents: Vec<Document> = vec!();
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            if let Ok(object) = serde_json::from_str(&line[..]) {
+                let object: serde_json::Value = object;
+                let labels: Vec<Option<String>> = label_fields.iter().map(|l| object[l].as_str().map(|s| s.to_string())).collect();
+                for text_field in text_fields {
+                    let text = object[text_field].as_str();
+                    documents.push(Document {
+                        labels: Some(labels.clone()),
+                        text: text.expect("Expected to find text").to_string(),
+                    });
+                }
+            } else {
+                error!("Unable to parse JSON object");
+                return Err(());
             }
         } else {
-            update_phrase_model(None, &mut documents).expect("Failed to update phrase models");
+            error!("Unable to read line from buffer");
+            return Err(());
         }
     }
+    Ok(documents)
 }
 
-#[derive(Deserialize)]
-struct LabeledDocument {
-    label: Option<String>,
-    text: String,
+fn read_documents_from_plain(buf: &mut std::io::Read, labels: Vec<Option<String>>) -> std::io::Result<Vec<Document>> {
+    let reader = BufReader::new(buf);
+    let mut documents: Vec<Document> = vec!();
+    for line in reader.lines() {
+        let line: String = line?;
+        documents.push(Document {
+            text: line.clone(),
+            labels: Some(labels.iter().map(|s| s.clone().map(|ss| ss.to_string())).collect()),
+        });
+    }
+    Ok(documents)
 }
 
-fn count_file(path: &str, labels: Option<Vec<String>>, is_csv: bool, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
-    if is_csv {
-        let mut reader = csv::Reader::from_path(path).expect("Couldn't open CSV");
-        let mut labeled_documents: Vec<LabeledDocument> = read_documents_from_csv(&mut reader, &text_fields.unwrap_or(vec!("text".to_string())), &label_fields.unwrap_or(vec!("label".to_string())));
+fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+    let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
+    let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
 
-        for result in reader.deserialize() {
-            let labeled_document: LabeledDocument = result.expect("failed to parse line");
-            labeled_documents.push(labeled_document);
-        }
-
-        update_phrase_models_from_labeled_documents(&mut labeled_documents).expect("Failed to update phrase models.");
-    } else {
-        let file = std::fs::File::open(path).unwrap();
-        let mut documents: Vec<String> = BufReader::new(file).lines().map(|s| s.expect("Couldn't read line")).collect();
-        if let Some(labels) = labels {
-            for label in labels.iter() {
-                update_phrase_model(Some(label.clone()), &mut documents).expect("Failed to update phrase models");
-            }
-        } else {
-            update_phrase_model(None, &mut documents).expect("Failed to update phrase models");
-        }
-    };
+    let mut documents = read_documents(&mut std::io::stdin(), &mode, &text_fields, &label_fields, labels).expect("Unable to read documents from stdin");
+    update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
 }
 
-fn cmd_count(path: &str, labels: Option<Vec<String>>, is_csv: bool, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
-    if is_csv && labels.is_some() {
-        error!("Cannot specify label and provide a CSV");
+fn count_file(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+    let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
+    let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
+    let mut file = File::open(path).expect("Couldn't open file for counting ngrams");
+
+    let mut documents = read_documents(&mut file, &mode, &text_fields, &label_fields, labels).expect("Unable to read documents from stdin");
+    update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+}
+
+fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+    if mode != ParseMode::PlainText && !labels.is_empty() && labels[0] != None {
+        error!("Cannot specify labels for non-plaintext parse mode");
         std::process::exit(1);
-    } else if !is_csv && text_fields.is_some() {
+    } else if mode == ParseMode::PlainText && text_fields.is_some() {
         error!("Can't specify text field for non-CSV input");
         std::process::exit(1);
-    } else if !is_csv && label_fields.is_some() {
+    } else if mode == ParseMode::PlainText && label_fields.is_some() {
         error!("Can't specify label field for non-CSV input");
         std::process::exit(1);
     }
     std::fs::create_dir_all("data").expect("Failed to ensure data directory existence.");
     if path == "-" {
-        count_stdin(labels, is_csv, text_fields, label_fields);
+        count_stdin(labels, mode, text_fields, label_fields);
     } else {
-        count_file(path, labels, is_csv, text_fields, label_fields);
+        count_file(path, labels, mode, text_fields, label_fields);
     };
 }
 
-fn cmd_transform(input: String, is_csv: bool, label: Option<String>, delim: String, output: Option<String>) {
-    if is_csv && label.is_some() {
-        error!("Cannot specify label and provide a CSV");
-        std::process::exit(1);
-    }
+fn cmd_transform(input: String, output: Option<String>, mode: ParseMode, delim: String, labels: Vec<Option<String>>, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+    transform_inner(
+        &mut Input::from_arg(Some(input)).expect("Couldn't open input"),
+        &mut Output::from_arg(output).expect("Couldn't open output"),
+        mode,
+        delim,
+        labels,
+        text_fields,
+        label_fields,
+    );
+}
 
-    if is_csv {
-        transform_csv(input, delim, output);
-    } else {
-        transform_standard(input, label, delim, output);
+fn transform_inner(inbuf: &mut Input, outbuf: &mut Output, mode: ParseMode, delim: String, labels: Vec<Option<String>>, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+    let label_fields = match label_fields { Some(fields) => fields, None => vec!() };
+    let text_fields = match text_fields { Some(fields) => fields, None => vec!() };
+    if mode == ParseMode::CSV {
+        transform_csv(inbuf, outbuf, delim, &text_fields, &label_fields);
+    } else if mode == ParseMode::PlainText {
+        transform_plain(inbuf, outbuf, delim, labels);
+    } else if mode == ParseMode::JSON {
+        transform_json(inbuf, outbuf, delim, &text_fields, &label_fields);
     }
 }
 
-fn transform_csv(input: String, delim: String, output: Option<String>) {
-    if input == "-" {
-        transform_csv_inner(&mut csv::Reader::from_reader(std::io::stdin()), delim, output);
-    } else {
-        transform_csv_inner(&mut csv::Reader::from_path(input).expect("Couldn't read provided input file"), delim, output);
-    }
-}
-
-fn transform_csv_inner<T: std::io::Read>(csv_reader: &mut csv::Reader<T>, delim: String, output: Option<String>) {
-    if let Some(path) = output {
-        transform_csv_inner_2(csv_reader, &mut csv::Writer::from_path(&path).expect("Couldn't open output file for writing"), &delim);
-    } else {
-        transform_csv_inner_2(csv_reader, &mut csv::Writer::from_writer(std::io::stdout()), &delim);
-    };
-    
-}
-
-fn transform_csv_inner_2<A: std::io::Read, B: std::io::Write>(csv_reader: &mut csv::Reader<A>, csv_writer: &mut csv::Writer<B>, delim: &String) {
-    for result in csv_reader.deserialize() {
-        let document: TransformDocument = result.expect("Unable to parse csv document");
-        let transformed = transform_text(delim, &document.label, &document.text);
-        csv_writer.serialize(TransformDocument { label: document.label, text: transformed}).expect("Couldn't write CSV output");
-    }
-    csv_writer.flush().expect("Couldn't flush CSV output buffer");
-}
-
-fn transform_standard(input: String, label: Option<String>, delim: String, output: Option<String>) {
-    if let Some(path) = output {
-        if &input == "-" {
-            transform_standard_inner(label, delim, &mut File::create(path).expect("Couldn't read input path"), BufReader::new(std::io::stdin()));
-        } else {
-            transform_standard_inner(label, delim, &mut File::create(path).expect("Couldn't read input path"), BufReader::new(File::open(input).expect("Couldn't open input file for reading")));
+fn transform_csv(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
+    let mut reader = csv::Reader::from_reader(inbuf);
+    let mut writer = csv::Writer::from_writer(outbuf);
+    let text_idxs: Vec<usize> = header_indexes(&mut reader, text_fields);
+    let label_idxs: Vec<usize> = header_indexes(&mut reader, label_fields);
+    for record in reader.records() {
+        let record = record.expect("Couldn't read row from CSV");
+        let mut out_record: Vec<String> = vec!();
+        let labels: Vec<Option<String>> = label_idxs.iter().map(|l| record.get(l.clone()).map(|s| s.to_string())).collect();
+        for (idx, val) in record.iter().enumerate() {
+            if text_idxs.contains(&idx) {
+                out_record.push(transform_text(&delim, &labels, val.to_string()));
+            } else {
+                out_record.push(val.to_string());
+            }
         }
-    } else {
-        if &input == "-" {
-            transform_standard_inner(label, delim, &mut std::io::stdout(), BufReader::new(std::io::stdin()));
-        } else {
-            transform_standard_inner(label, delim, &mut std::io::stdout(), BufReader::new(File::open(input).expect("Couldn't open input file for reading")));
-        }
+        writer.write_record(out_record.iter()).expect("Couldn't write CSV row");
     }
 }
 
-fn transform_standard_inner<T: std::io::Write, S: BufRead>(label: Option<String>, delim: String, outbuf: &mut T, inbuf: S) {
-    for line in inbuf.lines() {
-        if let Ok(line) = line {
-            let transformed = transform_text(&delim, &label, &line);
-            write!(outbuf, "{}", transformed).expect("Couldn't write line to output buffer");
-        } else {
-            error!("Couldn't read line");
-        }
+fn transform_plain(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, labels: Vec<Option<String>>) {
+    let reader = BufReader::new(inbuf);
+    for line in reader.lines() {
+        writeln!(outbuf, "{}", transform_text(&delim, &labels, line.expect("Couldn't read plaintext line"))).expect("Couldn't write plaintext output");
     }
+    outbuf.flush().expect("Couldn't flush output buffer");
 }
 
+fn transform_json(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
+    let reader = BufReader::new(inbuf);
+    for line in reader.lines() {
+        if let Ok(object) = serde_json::from_str(&line.expect("Couldn't read JSON line")[..]) {
+            let mut object: serde_json::Value = object;
+            let labels: Vec<Option<String>> = label_fields.iter().map(|l| object[l].as_str().map(|s| s.to_string())).collect();
+            for text_field in text_fields {
+                if let Some(text) = object[text_field].as_str() {
+                    object[text_field] = serde_json::value::Value::String(transform_text(&delim, &labels, text.to_string()));
+                }
+            }
+            write!(outbuf, "{}", serde_json::to_string(&object).expect("Couldn't dump object to json")).expect("Couldn't write JSON record");
+        }
+    }
+    outbuf.flush().expect("Couldn't flush final JSON output");
+}
 
 // Allocates the given window to known phrases as best possible.  Returns number of stems consumed.
 fn allocate_ngrams(stem_window: &mut Vec<String>, buf: &mut String, label: &Option<String>, min_score: &f64, delim: &String) -> usize {
@@ -763,11 +859,15 @@ fn allocate_ngrams(stem_window: &mut Vec<String>, buf: &mut String, label: &Opti
 }
 
 
+fn transform_text(delim: &String, labels: &Vec<Option<String>>, document: String) -> String {
+    labels.iter().fold(document, |document, label| transform_text_inner(delim, label, &document))
+}
+
 /// Eager implementation of phrase transform - as long as the the deque contains a phrase, keep trying to add more tokens
 /// Example:
 ///  In:  'Please, use the fax machine to send it.'
 ///  Out: 'Please, use the fax_machine to send it.'
-fn transform_text(delim: &String, label: &Option<String>, document: &String) -> String {
+fn transform_text_inner(delim: &String, label: &Option<String>, document: &String) -> String {
     let max_ngram = MAX_NGRAM.clone();
     let min_score = MIN_SCORE.clone();
     let mut result = String::new();
@@ -1167,7 +1267,7 @@ fn main() {
             (@arg label: -l --label +takes_value ... "Label to apply to the provided documents")
             (@arg labelfield: --labelfield +takes_value ... "The field to use for labeling text")
             (@arg textfield: --textfield +takes_value ... "The text field to use to learn phrases")
-            (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases, or use `labelfield` or `textfield` to specify columns to take labels or texts from.")
+            (@arg mode: -m --mode +takes_value "Input parse mode, uses `label` and `text` field by default, or use `labelfield` or `textfield` to specify fields to take labels or texts from.")
             (@arg workers: --workers -w +takes_value "Number of workers to use, defaults to number of system threads.")
             (setting: clap::AppSettings::ArgRequiredElseHelp)
         )
@@ -1184,6 +1284,9 @@ fn main() {
         (@subcommand transform =>
             (about: "Replace detected phrases with delimiter-joiend version: fax machine -> fax_machine")
             (@arg input: +required "File to read text data from, use - to pipe from stdin")
+            (@arg labelfield: --labelfield +takes_value ... "The field to use for labeling text")
+            (@arg textfield: --textfield +takes_value ... "The text field to use to learn phrases")
+            (@arg mode: -m --mode +takes_value "Input parse mode, uses `label` and `text` field by default, or use `labelfield` or `textfield` to specify fields to take labels or texts from.")
             (@arg label: -l --label +takes_value "Label specifying which model to use for transform")
             (@arg delim: --delim +takes_value "The delimiter to use between tokens (default is _)")
             (@arg csv: --csv "Parse input as CSV, use `label` column for label, `text` column to learn phrases")
@@ -1202,21 +1305,29 @@ fn main() {
         serve(host, port);
     } else if let Some(matches) = matches.subcommand_matches("count") {
         env_logger::init();
-        let is_csv = matches.is_present("csv");
+        let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
+        let mode: ParseMode = mode.expect("Invalid parse mode provided.");
         let labels: Option<Vec<String>> = matches.values_of("label").map(|v| v.map(|s| s.to_string()).collect());
+        let labels: Vec<Option<String>> = if let Some(labels) = labels {
+            if labels.is_empty() {
+                vec!(None)
+            } else {
+                labels.iter().map(|l| Some(l.clone())).collect()
+            }
+        } else {
+            vec!(None)
+        };
+        for label in labels.iter() {
+            assert_label_valid(&label.as_ref());
+        }
         if let Some(num_workers) = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")) {
             std::env::set_var("RAYON_NUM_THREADS", num_workers.to_string());
         }
         let text_fields: Option<Vec<String>> = matches.values_of("textfield").map(|v| v.map(|s| s.to_string()).collect());
         let label_fields: Option<Vec<String>> = matches.values_of("labelfield").map(|v| v.map(|s| s.to_string()).collect());
-        if let Some(labels) = &labels {
-            for label in labels.iter() {
-                assert_label_valid(&Some(label));
-            }
-        }
         match matches.value_of("input") {
             Some(path) => {
-                cmd_count(path, labels, is_csv, text_fields, label_fields);
+                cmd_count(path, labels, mode, text_fields, label_fields);
             },
             None => {
                 error!("Must provide a file to read text from, or pass - and stream to stdin.");
@@ -1231,14 +1342,30 @@ fn main() {
         cmd_export();
     } else if let Some(matches) = matches.subcommand_matches("transform") {
         env_logger::init();
-        let is_csv = matches.is_present("csv");
         let label = matches.value_of("label").map(|s| s.to_string());
         let delim = matches.value_of("delim").map(|s| s.to_string()).unwrap_or("_".to_string());
         let output = matches.value_of("output").map(|s| s.to_string());
+        let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
+        let mode: ParseMode = mode.expect("Invalid parse mode provided.");
+        let labels: Option<Vec<String>> = matches.values_of("label").map(|v| v.map(|s| s.to_string()).collect());
+        let labels: Vec<Option<String>> = if let Some(labels) = labels {
+            if labels.is_empty() {
+                vec!(None)
+            } else {
+                labels.iter().map(|l| Some(l.clone())).collect()
+            }
+        } else {
+            vec!(None)
+        };
+        for label in labels.iter() {
+            assert_label_valid(&label.as_ref());
+        }
+        let text_fields: Option<Vec<String>> = matches.values_of("textfield").map(|v| v.map(|s| s.to_string()).collect());
+        let label_fields: Option<Vec<String>> = matches.values_of("labelfield").map(|v| v.map(|s| s.to_string()).collect());
         assert_label_valid(&label.as_ref());
         match matches.value_of("input") {
             Some(input) => {
-                cmd_transform(input.to_string(), is_csv, label, delim, output);
+                cmd_transform(input.to_string(), output, mode, delim, labels, text_fields, label_fields);
             },
             None => {
                 error!("Must provide a file to read text from, or pass - and stream to stdin.");

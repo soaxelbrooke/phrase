@@ -24,15 +24,14 @@ N-gram counting is done continuously, providing batches of documents as they com
 This example uses the `assets/reviews.csv` data in the repo, 10k app reviews:
 
 ```
-$ head -2 assets/reviews.csv 
-label,text
-6000;positive,"Woww! Moon Invoice is just so amazing. I don’t think any such app exists that works so wonderfully. I am awestruck by the experience."
+$ head -1 assets/reviews.json
+{"body": "Woww! Moon Invoice is just so amazing. I don\u2019t think any such app exists that works so wonderfully. I am awestruck by the experience.", "category": "6000", "sentiment": "positive"}
 ```
 
 First, you need to count ngrams from your data:
 
 ```
-$ phrase count assets/reviews.csv --csv
+$ phrase count --mode json assets/reviews.json --textfield body --labelfield category --labelfield sentiment
 ```
 
 (This creates ngram count files at `data/counts_*`)
@@ -103,13 +102,13 @@ $ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "pos
 **POST /transform** - eagerly replaces the longest phrases found in the provided documents.
 
 ```
-curl -XPOST localhost:6220/transform -d '{"documents": [{"label": "6001", "text": "The weather channel is great for when I want to check the weather!"}]}'
+$ curl -XPOST localhost:6220/transform -d '{"documents": [{"labels": ["6001"], "text": "The weather channel is great for when I want to check the weather!"}]}'
 [{"label":"6001","text":"The Weather_Channel is great for when I_want_to check_the_weather!"}]
 ```
 
 ## Labels
 
-Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.  Labels are generally provided in the `label` column of the input CSV, or with the `--label` command line argument.
+Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.  Labels are generally provided in the `label` field of the input file, specified using `--labelfield` argument, or with the `--label` argument.
 
 Providing labels for your data causes `phrase` to count them into separate bags per label, and during export allows it to calculate an extra significance score based on label (instead of just co-occurance).  This means that a phrase that is unique to that label is much more likely to be picked up than if it was being overshadowed in unlabeled data.
 
