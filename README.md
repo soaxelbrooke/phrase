@@ -1,15 +1,23 @@
 
 <p align="center">
-  <img width="256" height="256" title="phrase" src="https://user-images.githubusercontent.com/2815794/57115077-811bfa00-6d01-11e9-8f3b-b49be93a35e1.png">
+  <img width="256" height="256" title="phrase" src="https://user-images.githubusercontent.com/2815794/57146626-a39e2980-6d7a-11e9-87d7-8d1a25aa6837.png">
 </p>
 
 A tool for learning significant phrase/term models, and efficiently labeling with them.
 
-## Use
-
-### Installation
+## Installation
 
 Download and extract the [release archive](https://github.com/soaxelbrooke/phrase/releases) for your OS, and put the `phrase` binary somewhere on the PATH (like `/usr/local/bin`).
+
+## Use
+
+In general, using `phrase` falls into 3 steps:
+
+1. Counting n-grams
+2. Exporting scored models
+3. Significant term/phrase extraction/transform
+
+N-gram counting is done continuously, providing batches of documents as they come in. Model export reads all n-gram counts so far and calculates mutual information-based collocations - you can then deploy the models by shipping the binary and `data/scores_*` files to a server.  Labeling (identifying all significant terms and phrases in text) or transforming (replacing longest found phrases in text) can be done either via the CLI or the web server. [Providing labels](#labels) for documents is not necessary for learning phrases, but does help, and allows for significant term labeling also.
 
 ### Training a phrase model
 
@@ -19,7 +27,7 @@ First, you need to count ngrams from your data:
 $ phrase count assets/reviews.csv --csv
 ```
 
-(This creates ngram count files under `data/`)
+(This creates ngram count files at `data/counts_*`)
 
 Then, you need to export scored phrase models:
 
@@ -27,12 +35,20 @@ Then, you need to export scored phrase models:
 $ phrase export
 ```
 
-(This will create scored phrase models under `data/`)
+(This will create scored phrase models at `data/scores_*`)
 
 ### Validating Learned Phrases
 
+You can validate the phrases being learned per-label with the `show` command:
+
 ```
 $ phrase show -n 3
+
+Label=6009
+hash,ngram,score
+3178089391134982486,New Yorker,0.5142287028163096
+18070968419002659619,long form,0.5096737783425647
+16180697492236521925,sleep timer,0.5047391214969927
 
 Label=6000
 hash,ngram,score
@@ -40,30 +56,10 @@ hash,ngram,score
 12483914742025992948,Crew Lounge,0.5479129370086021
 11796198430323558093,black and white,0.5385891753319711
 
-Label=6005
-hash,ngram,score
-5028985570365810872,seeking arrangement,0.555805973833051
-3452512271924928155,older women,0.5492325901167289
-1856639309753967090,younger men,0.5380823555018927
-
-Label=6001
-hash,ngram,score
-16860550243828630957,Lil Bub,0.5476212238386382
-15429443734362810908,Dark Sky,0.538136969505567
-17787744274931639214,zip code,0.5126091671796332
-
-Label=6003
-hash,ngram,score
-16827980792972836770,Na Pali,0.6170795527743764
-4230405495922241687,road to Hana,0.5618339661289787
-8724945449383040970,fast pass,0.5496929588451972
-
-Label=6009
-hash,ngram,score
-3178089391134982486,New Yorker,0.5142287028163096
-18070968419002659619,long form,0.5096737783425647
-16180697492236521925,sleep timer,0.5047391214969927
+...
 ```
+
+`hash` is the hash of the stemmed N-gram, `ngram` is the canonical version of the n-gram used for display purposes.  For phrases, `score` is a combination of collocation NPMI and n-gram-label NPMI, and is only n-gram-label NPMI for single tokens.
 
 ### Transforming Text
 
@@ -85,17 +81,17 @@ $ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "pos
 
 ## Labels
 
-Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.
+Labels are used to learn significant single tokens and to aid in scoring significant phrases.  While `phrase` can be used without providing labels, providing them allows it to learn more nuanced phrases, like used by a specific community or when describing a specific product.  Labels are generally provided in the `labels` column of the input CSV, or with the `--label` command line argument.
 
 Providing labels for your data causes `phrase` to count them into separate bags per label, and during export allows it to calculate an extra significance score based on label (instead of just co-occurance).  This means that a phrase that is unique to that label is much more likely to be picked up than if it was being overshadowed in unlabeled data.
 
-An example of a good label would be app category, as apps in each category are related, and customer reviews talk about similar subjects.
+An example of a good label would be app category, as apps in each category are related, and customer reviews talk about similar subjects.  An example of a bad label would be user ID, since it would be very high cardinality, cause very bad performance, and likely wouldn't learn useful phrases or terms due to data sparsity per user.
 
 ## Performance
 
 It's fast.
 
-Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Ubuntu Intel i7:
+It takes ~1 second to count 1 to 5-grams for 10,000 reviews, and ~1.2 seconds to export. Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Intel Core i7-7820HQ (Ubuntu):
 
 |Task|Tokens per Second per Thread|
 |----|--------------------------|
@@ -104,13 +100,13 @@ Performance is primarily based on n-gram size, the number of labels, and vocab s
 |Labeling significant terms|354,395|
 |Phrase transformation|345,957|
 
-* Exports do not gain much from parallelization
+_Note:_ Exports do not gain much from parallelization
 
 ## Environment Variables
 
 A variety of environment variables can be used:
 
-`LANG` - Determines the stemmer language to use from this.  Should be set automatically on Unix systems, but can be overridden.
+`LANG` - Determines the stemmer language to use, [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes).  Should be set automatically on Unix systems, but can be overridden.
 
 `TOKEN_REGEX` - The regular expression used to find tokens when learning and labeling phrases.
 
@@ -132,8 +128,8 @@ A variety of environment variables can be used:
 
 `MAX_EXPORT` - The maximum size of exported models, per label.
 
-`NGRAM_DELIM` - The delimiter used to join phrases when using the `transform` subcommand.  Default is _: `fax machine` -> `fax_machine`.
+`NGRAM_DELIM` - The delimiter used to join phrases when using the `transform` subcommand.  Default is `_`: `fax machine` -> `fax_machine`.
 
-### References
+## References
 
 [Normalized (Pointwise) Mutual Information in Collocation Extraction - Gerlof Bouma](https://svn.spraakdata.gu.se/repos/gerlof/pub/www/Docs/npmi-pfd.pdf)
