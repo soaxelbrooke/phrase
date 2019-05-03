@@ -1257,7 +1257,7 @@ fn assert_label_valid(label: &Option<&String>) {
 
 fn main() {
     let matches = clap_app!(phrase => 
-        (version: "0.3.2")
+        (version: "0.3.3")
         (author: "Stuart Axelbrooke <stuart@axelbrooke.com>")
         (about: "Detect phrases in free text data.")
         (setting: clap::AppSettings::ArgRequiredElseHelp)
