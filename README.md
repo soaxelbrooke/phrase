@@ -1,5 +1,5 @@
 
-# Phrase
+![phrase](https://raw.githubusercontent.com/soaxelbrooke/phrase/master/assets/logo.svg)
 
 A tool for learning significant phrase/term models, and efficiently labeling with them.
 
@@ -106,6 +106,8 @@ A variety of environment variables can be used:
 `PRUNE_TO` - Controls what size ngram mappings are pruned to during pruning.  Also sets the number of ngrams that are saved after counting (sorted by count).
 
 `MAX_NGRAM` - The highest ngram size to count to, higher values cause slower counting, but allow for more specific and longer phrases. Default is 5.
+
+`MIN_NGRAM` - The lowest ngram size to export, default is 1 (unigrams).
 
 `MIN_COUNT` - The minimum ngram count for a phrase or token to be considered significant.  Default is 5.
 
