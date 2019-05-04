@@ -7,7 +7,7 @@ A tool for learning significant phrase/term models, and efficiently labeling wit
 
 ## Installation
 
-Download and extract the [release archive](https://github.com/soaxelbrooke/phrase/releases) for your OS, and put the `phrase` binary somewhere on the PATH (like `/usr/local/bin`).
+Download and extract the [release archive](https://github.com/soaxelbrooke/phrase/releases) for your OS, and put the `phrase` binary somewhere on the PATH (like `/usr/local/bin`).  If you're using linux, the GNU binary currently appears to be 5-10x faster than the musl version, so try that first.
 
 ## Use
 
