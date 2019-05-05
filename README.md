@@ -9,6 +9,14 @@ A tool for learning significant phrase/term models, and efficiently labeling wit
 
 Download and extract the [release archive](https://github.com/soaxelbrooke/phrase/releases) for your OS, and put the `phrase` binary somewhere on the PATH (like `/usr/local/bin`).  If you're using linux, the GNU binary currently appears to be 5-10x faster than the musl version, so try that first.
 
+For example, installing the linux binary:
+
+```
+$ wget https://github.com/soaxelbrooke/phrase/releases/download/0.3.3/phrase-0.3.3-x86_64-unknown-linux-gnu.tar.gz
+$ tar -xzvf phrase-0.3.3-x86_64-unknown-linux-gnu.tar.gz
+$ sudo mv phrase /usr/local/bin/
+```
+
 ## Use
 
 In general, using `phrase` falls into 3 steps:
