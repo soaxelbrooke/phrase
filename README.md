@@ -3,7 +3,7 @@
   <img width="256" height="256" title="phrase" src="https://user-images.githubusercontent.com/2815794/57149171-faf2c880-6d7f-11e9-901f-3010f9abc443.png">
 </p>
 
-A tool for learning significant phrase/term models, and efficiently labeling with them.
+A CLI tool and server for learning significant phrase/term models, and efficiently labeling with them.
 
 ## Installation
 
@@ -23,7 +23,7 @@ In general, using `phrase` falls into 3 steps:
 
 1. Counting n-grams
 2. Exporting scored models
-3. Significant term/phrase extraction/transform
+3. Significant term/phrase extraction/transform or model serving
 
 N-gram counting is done continuously, providing batches of documents as they come in. Model export reads all n-gram counts so far and calculates mutual information-based collocations - you can then deploy the models by shipping the binary and `data/scores_*` files to a server.  Labeling (identifying all significant terms and phrases in text) or transforming (eager replace of longest found phrases in text) can be done either via the CLI or the web server. [Providing labels](#labels) for documents is not necessary for learning phrases, but does help, and allows for significant term labeling also.
 
@@ -36,13 +36,13 @@ $ head -1 assets/reviews.json
 {"body": "Woww! Moon Invoice is just so amazing. I don\u2019t think any such app exists that works so wonderfully. I am awestruck by the experience.", "category": "6000", "sentiment": "positive"}
 ```
 
-First, you need to count ngrams from your data:
+First, you need to count n-grams from your data:
 
 ```
 $ phrase count --mode json assets/reviews.json --textfield body --labelfield category --labelfield sentiment
 ```
 
-(This creates ngram count files at `data/counts_*`)
+(This creates n-gram count files at `data/counts_*`)
 
 Then, you need to export scored phrase models:
 
@@ -82,6 +82,8 @@ hash,ngram,score
 $ echo "The weather channel is great for when I want to check the weather!" | phrase transform --label 6001 -
 The Weather_Channel is great for when I_want_to check_the_weather!
 ```
+
+Modes allow CSV, JSON, and plaintext (the default). CSV and JSON will maintain the rest of the document/row, but replace text in the specified `--textlabel` fields (or in the `text` field if not specified).
 
 ### Serving Scored Phrase Models
 
@@ -147,17 +149,17 @@ A variety of environment variables can be used:
 
 `CHUNK_SPLIT_REGEX` - The regular expression used to detect chunk boundaries, across which phrases aren't learned.
 
-`HEAD_IGNORES / TAIL_IGNORES` - Used to ignore phrases that start or end with a token, comma separated.  For instance, `TAIL_IGNORES=the` would ignore 'I love the'.
+`HEAD_IGNORES` / `TAIL_IGNORES` - Used to ignore phrases that start or end with a token, comma separated.  For instance, `TAIL_IGNORES=the` would ignore 'I love the'.
 
-`PRUNE_AT` - The size at which to prune the ngram count mapping.  Useful for limiting memory usage, default is 5000000.
+`PRUNE_AT` - The size at which to prune the n=gram count mapping.  Useful for limiting memory usage, default is 5000000.
 
-`PRUNE_TO` - Controls what size ngram mappings are pruned to during pruning.  Also sets the number of ngrams that are saved after counting (sorted by count).
+`PRUNE_TO` - Controls what size n-gram mappings are pruned to during pruning.  Also sets the number of n-grams that are saved after counting (sorted by count).
 
-`MAX_NGRAM` - The highest ngram size to count to, higher values cause slower counting, but allow for more specific and longer phrases. Default is 5.
+`MAX_NGRAM` - The highest n-gram size to count to, higher values cause slower counting, but allow for more specific and longer phrases. Default is 5.
 
-`MIN_NGRAM` - The lowest ngram size to export, default is 1 (unigrams).
+`MIN_NGRAM` - The lowest n-gram size to export, default is 1 (unigrams).
 
-`MIN_COUNT` - The minimum ngram count for a phrase or token to be considered significant.  Default is 5.
+`MIN_COUNT` - The minimum n-gram count for a phrase or token to be considered significant.  Default is 5.
 
 `MIN_SCORE` - The minimum NPMI score for a term or phrase to be considered significant.  Default is 0.1.
 
