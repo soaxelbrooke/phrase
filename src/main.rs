@@ -235,24 +235,24 @@ lazy_static! {
             "sv" => Algorithm::Swedish,
             "ta" => Algorithm::Tamil,
             "tk" => Algorithm::Turkish,
-            _ => panic!(r#"Invalid stemming language, please choose one of the following:
-    Arabic
-    Danish
-    Dutch
-    English
-    Finnish
-    French
-    German
-    Greek
-    Hungarian
-    Italian
-    Portuguese
-    Romanian
-    Russian
-    Spanish
-    Swedish
-    Tamil
-    Turkish
+            _ => panic!(r#"Invalid stemming language, please let LANG one of the following:
+    "ar" => Arabic
+    "da" => Danish
+    "nl" => Dutch
+    "en" => English
+    "fi" => Finnish
+    "fr" => French
+    "de" => German
+    "el" => Greek
+    "hi" => Hungarian
+    "it" => Italian
+    "pt" => Portuguese
+    "ro" => Romanian
+    "ru" => Russian
+    "es" => Spanish
+    "sv" => Swedish
+    "ta" => Tamil
+    "tk" => Turkish
 "#),
     };
         Stemmer::create(algorithm)
