@@ -17,7 +17,6 @@ use std::fs::File;
 use rust_stemmers::{Algorithm, Stemmer};
 use rocket_contrib::json::{Json, JsonValue};
 use arrayvec::ArrayString;
-use itertools::Itertools;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -148,6 +147,50 @@ impl std::io::Read for Input {
     }
 }
 
+enum ReaderStrategy {
+    CSV(csv::Reader<Input>),
+    File(BufReader<Input>),
+}
+
+struct BatchedInputReader {
+    reader: ReaderStrategy,
+    batch_size: u64,
+    mode: ParseMode,
+}
+
+impl BatchedInputReader {
+    fn new(input: Input, mode: ParseMode, batch_size: u64) -> BatchedInputReader {
+        if mode == ParseMode::CSV {
+            BatchedInputReader {
+                reader: ReaderStrategy::CSV(csv::Reader::from_reader(input)),
+                mode: mode,
+                batch_size: batch_size,
+            }
+        } else {
+            BatchedInputReader {
+                reader: ReaderStrategy::File(BufReader::new(input)),
+                mode: mode,
+                batch_size: batch_size,
+            }
+        }
+    }
+
+    fn read_batch(&mut self, text_fields: &Vec<String>, label_fields: &Vec<String>, labels: Vec<Option<String>>) -> Option<Vec<Document>> {
+        let documents = match &mut self.reader {
+            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(reader, text_fields, label_fields, &self.batch_size).ok(),
+            ReaderStrategy::File(ref mut reader) => match &self.mode {
+                ParseMode::JSON => read_documents_from_json(reader, text_fields, label_fields, &self.batch_size).ok(), 
+                ParseMode::PlainText => read_documents_from_plain(reader, labels, &self.batch_size).ok(),
+                _ => None
+            }
+        };
+        match documents {
+            Some(vec) => if vec.is_empty() { None } else { Some(vec) },
+            None => None,
+        }
+    }
+}
+
 enum Output {
     Standard(std::io::Stdout),
     File(std::fs::File),
@@ -207,6 +250,7 @@ lazy_static! {
     static ref MIN_SCORE: f64 = parse_env("MIN_SCORE", 0.1f64);
     static ref MAX_EXPORT: u32 = parse_env("MAX_EXPORT", 250_000);
     static ref NGRAM_DELIM: String = std::env::var("NGRAM_DELIM").unwrap_or(" ".to_string());
+    static ref BATCH_SIZE: u64 = parse_env("BATCH_SIZE", 1_000_000);
 
     static ref HEAD_UNIGRAM_IGNORES: HashSet<String> = std::env::var("HEAD_IGNORES")
         .unwrap_or("the,a,is,and,of,to".to_string())
@@ -434,22 +478,18 @@ fn read_partition_scores_for_labels(labels: &Option<Vec<Option<String>>>, label_
 }
 
 fn update_phrase_model(label: Option<String>, documents: &mut Vec<String>) -> std::io::Result<()> {
-    const BATCH_SIZE: usize = 100_000;
     documents.sort();
     documents.dedup();
 
-    for batch in &documents.into_iter().chunks(BATCH_SIZE) {
-        let mut ngrams = read_partition_counts(&label.as_ref())?.unwrap_or(NGramCounts::new());
-        let docs: Vec<String> = batch.map(|s| s.to_owned()).collect();
-        let new_ngrams = count_ngrams(&docs);
-        if ngrams.len() > 0 {
-            merge_ngrams_into(&new_ngrams, &mut ngrams);
-            write_partition_counts(&label, &ngrams)?;
-        } else {
-            write_partition_counts(&label, &new_ngrams)?;
-        }
+    let mut ngrams = read_partition_counts(&label.as_ref())?.unwrap_or(NGramCounts::new());
+    let new_ngrams = count_ngrams(&documents);
+    if ngrams.len() > 0 {
+        merge_ngrams_into(&new_ngrams, &mut ngrams);
+        write_partition_counts(&label, &ngrams)?;
+    } else {
+        write_partition_counts(&label, &new_ngrams)?;
     }
-    
+
     Ok(())
 }
 
@@ -659,19 +699,6 @@ fn write_partition_counts(label: &Option<String>, ngrams: &NGramCounts) -> std::
     Ok(())
 }
 
-fn read_documents(buf: &mut std::io::Read, mode: &ParseMode, text_fields: &Vec<String>, label_fields: &Vec<String>, labels: Vec<Option<String>>) -> Result<Vec<Document>, ()> {
-    match mode {
-        ParseMode::CSV => read_documents_from_csv(buf, text_fields, label_fields),
-        ParseMode::JSON => read_documents_from_json(buf, text_fields, label_fields),
-        ParseMode::PlainText => {
-            read_documents_from_plain(buf, labels).map_err(|err| {
-                error!("Failed to parse plaintext due to {:?}", err);
-                ()
-            })
-        }
-    }
-}
-
 fn header_indexes<R: std::io::Read>(reader: &mut csv::Reader<R>, fields: &Vec<String>) -> Vec<usize> {
     let mut indexes = vec!();
     for (idx, header) in reader.headers().expect("Couldn't read CSV reader header").iter().enumerate() {
@@ -682,10 +709,9 @@ fn header_indexes<R: std::io::Read>(reader: &mut csv::Reader<R>, fields: &Vec<St
     indexes
 }
 
-fn read_documents_from_csv(buf: &mut std::io::Read, text_fields: &Vec<String>, label_fields: &Vec<String>) -> Result<Vec<Document>, ()> {
-    let mut csv_reader = csv::Reader::from_reader(buf);
-    let text_idxs: Vec<usize> = header_indexes(&mut csv_reader, text_fields);
-    let label_idxs: Vec<usize> = header_indexes(&mut csv_reader, label_fields);
+fn read_documents_from_csv(csv_reader: &mut csv::Reader<Input>, text_fields: &Vec<String>, label_fields: &Vec<String>, limit: &u64) -> Result<Vec<Document>, ()> {
+    let text_idxs: Vec<usize> = header_indexes(csv_reader, text_fields);
+    let label_idxs: Vec<usize> = header_indexes(csv_reader, label_fields);
     if text_idxs.is_empty() {
         error!("Didn't find text_field in the CSV header!");
         return Err(());
@@ -695,7 +721,7 @@ fn read_documents_from_csv(buf: &mut std::io::Read, text_fields: &Vec<String>, l
         return Err(());
     }
     let mut documents = vec!();
-    for record in csv_reader.records() {
+    for record in csv_reader.records().take(limit.clone() as usize) {
         let record = record.expect("Couldn't parse row");
         let labels: Vec<Option<String>> = label_idxs.iter().map(|idx| record.get(idx.clone()).map(|s| s.to_string())).collect();
         for text_idx in text_idxs.iter() {
@@ -713,10 +739,9 @@ fn read_documents_from_csv(buf: &mut std::io::Read, text_fields: &Vec<String>, l
     Ok(documents)
 }
 
-fn read_documents_from_json(buf: &mut std::io::Read, text_fields: &Vec<String>, label_fields: &Vec<String>) -> Result<Vec<Document>, ()> {
-    let reader = BufReader::new(buf);
+fn read_documents_from_json(reader: &mut BufReader<Input>, text_fields: &Vec<String>, label_fields: &Vec<String>, limit: &u64) -> Result<Vec<Document>, ()> {
     let mut documents: Vec<Document> = vec!();
-    for line in reader.lines() {
+    for line in reader.lines().take(limit.clone() as usize) {
         if let Ok(line) = line {
             if let Ok(object) = serde_json::from_str(&line[..]) {
                 let object: serde_json::Value = object;
@@ -740,10 +765,9 @@ fn read_documents_from_json(buf: &mut std::io::Read, text_fields: &Vec<String>, 
     Ok(documents)
 }
 
-fn read_documents_from_plain(buf: &mut std::io::Read, labels: Vec<Option<String>>) -> std::io::Result<Vec<Document>> {
-    let reader = BufReader::new(buf);
+fn read_documents_from_plain(reader: &mut BufReader<Input>, labels: Vec<Option<String>>, limit: &u64) -> std::io::Result<Vec<Document>> {
     let mut documents: Vec<Document> = vec!();
-    for line in reader.lines() {
+    for line in reader.lines().take(limit.clone() as usize) {
         let line: String = line?;
         documents.push(Document {
             text: line.clone(),
@@ -756,18 +780,33 @@ fn read_documents_from_plain(buf: &mut std::io::Read, labels: Vec<Option<String>
 fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
     let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
+    let mut batch_reader = BatchedInputReader::new(Input::stdin(), mode, BATCH_SIZE.clone());
 
-    let mut documents = read_documents(&mut std::io::stdin(), &mode, &text_fields, &label_fields, labels).expect("Unable to read documents from stdin");
-    update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+    loop {
+        let documents = batch_reader.read_batch(&text_fields, &label_fields, labels.clone());
+        if let Some(mut documents) = documents {
+            debug!("Process batch of {} documents.", documents.len());
+            update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+        } else {
+            break;
+        }
+    }
 }
 
 fn count_file(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
     let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let mut file = File::open(path).expect("Couldn't open file for counting ngrams");
+    let mut batch_reader = BatchedInputReader::new(Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"), mode, BATCH_SIZE.clone());
 
-    let mut documents = read_documents(&mut file, &mode, &text_fields, &label_fields, labels).expect("Unable to read documents from stdin");
-    update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+    loop {
+        let documents = batch_reader.read_batch(&text_fields, &label_fields, labels.clone());
+        if let Some(mut documents) = documents {
+            debug!("Process batch of {} documents.", documents.len());
+            update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+        } else {
+            break;
+        }
+    }
 }
 
 fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
