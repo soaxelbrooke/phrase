@@ -12,8 +12,8 @@ Download and extract the [release archive](https://github.com/soaxelbrooke/phras
 For example, installing the linux binary:
 
 ```
-$ wget https://github.com/soaxelbrooke/phrase/releases/download/0.3.3/phrase-0.3.3-x86_64-unknown-linux-gnu.tar.gz
-$ tar -xzvf phrase-0.3.3-x86_64-unknown-linux-gnu.tar.gz
+$ wget https://github.com/soaxelbrooke/phrase/releases/download/0.3.4/phrase-0.3.4-x86_64-unknown-linux-gnu.tar.gz
+$ tar -xzvf phrase-0.3.4-x86_64-unknown-linux-gnu.tar.gz
 $ sudo mv phrase /usr/local/bin/
 ```
 
