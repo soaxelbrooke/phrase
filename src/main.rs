@@ -257,7 +257,7 @@ lazy_static! {
     };
         Stemmer::create(algorithm)
     };
-    static ref TOKEN_REGEX: Regex = Regex::new(&std::env::var("TOKEN_REGEX").unwrap_or(r"[\w+'’]+".to_string())).unwrap();
+    static ref TOKEN_REGEX: Regex = Regex::new(&std::env::var("TOKEN_REGEX").unwrap_or(r"\b[\w+'’]+\b".to_string())).unwrap();
     static ref CHUNK_SPLIT_REGEX: Regex = Regex::new(&std::env::var("CHUNK_SPLIT_REGEX").unwrap_or(r"[\.\?!\(\);]+".to_string())).unwrap();
 }
 
@@ -460,7 +460,7 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Docum
             if let Some(group) = groups.get_mut(&label) {
                 group.push(labeled_document.text.clone());
             } else {
-                assert_label_valid(&label.to_owned().as_ref());
+                // assert_label_valid(&label.to_owned().as_ref());
                 groups.insert(label.clone(), vec!(labeled_document.text.clone()));
             }
         }
@@ -469,7 +469,8 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Docum
     debug!("Counting ngrams for labels: {:?}", groups.keys());
 
     groups.par_iter_mut().for_each(move |(label, mut documents)| {
-            update_phrase_model(label.clone(), &mut documents).expect("Thread failed in phrase model update");
+        let label = normalize_label(label);
+        update_phrase_model(label.clone(), &mut documents).expect("Thread failed in phrase model update");
     });
 
     Ok(())
@@ -526,7 +527,24 @@ fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram:
         }
 
         for token in TOKEN_REGEX.find_iter(chunk) {
+            if let Some(preceding_byte) = chunk.as_bytes().get(token.start() - 1) {
+                if preceding_byte == &64 /* @ */ || preceding_byte == &46 /* . */ || preceding_byte == &47 /* / */ || preceding_byte == &92 /* \ */ {
+                    // Ignore tokens that are preceded by . or @ (since rust regex doesn't do look behind)
+                    continue;
+                }
+            }
+            if let Some(following_byte) = chunk.as_bytes().get(token.end() + 1) {
+                if following_byte == &64 /* @ */ || following_byte == &46 /* . */ || following_byte == &47 /* / */ || following_byte == &92 /* \ */ {
+                    // Ignore tokens that are followed by . or @ (since rust regex doesn't do look behind)
+                    continue;
+                }
+            }
             let token_string: String = token.as_str().to_string();
+
+            if let Ok(_num) = token_string.parse::<i64>() {
+                // Ignore numbers
+                continue;
+            }
 
             for i in 1..max_ngram+1 {
                 if let Some(token_queue) = token_queues.get_mut(i - 1) {
@@ -873,13 +891,14 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
     let mut result = String::new();
     let mut current_phrase: VecDeque<Match> = VecDeque::with_capacity(max_ngram);
     let mut last_token_end = 0;
+    let label = normalize_label(label);
     for token in TOKEN_REGEX.find_iter(document) {
         current_phrase.push_back(token);
         if current_phrase.len() == max_ngram {
             result.push_str(&document[last_token_end..current_phrase.get(0).expect("Should have been able to get head token").start()]);
             // At this point, the result string is up to date (apart from stems in the queue already)
             let mut stem_window: Vec<String> = current_phrase.iter().map(|m| re_match_stem(m.clone())).collect();
-            let tokens_written = allocate_ngrams(&mut stem_window, &mut result, label, &min_score, delim);
+            let tokens_written = allocate_ngrams(&mut stem_window, &mut result, &label, &min_score, delim);
             if tokens_written == 0 {
                 // No tokens were written, need to write the first one
                 let first_token = current_phrase.pop_front().unwrap();
@@ -899,7 +918,7 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
     while !current_phrase.is_empty() {
         result.push_str(&document[last_token_end..current_phrase.get(0).expect("Should have been able to get head token").start()]);
         let mut stem_window: Vec<String> = current_phrase.iter().map(|m| re_match_stem(m.clone())).collect();
-        let tokens_written = allocate_ngrams(&mut stem_window, &mut result, label, &min_score, delim);
+        let tokens_written = allocate_ngrams(&mut stem_window, &mut result, &label, &min_score, delim);
         if tokens_written == 0 {
             // No tokens were written, need to write the first one
             let first_token = current_phrase.pop_front().unwrap();
@@ -1255,6 +1274,16 @@ fn assert_label_valid(label: &Option<&String>) {
     }
 }
 
+fn normalize_label(label: &Option<String>) -> Option<String> {
+    if let Some(label) = label {
+        let label = Regex::new(r"\&").unwrap().replace_all(label, "and").to_string();
+        let label = Regex::new(r"[<>\|\\:\(\)&;]").unwrap().replace_all(&label, "").to_string();
+        Some(label)
+    } else {
+        None
+    }
+}
+
 fn main() {
     let matches = clap_app!(phrase => 
         (version: "0.3.3")
@@ -1317,9 +1346,6 @@ fn main() {
         } else {
             vec!(None)
         };
-        for label in labels.iter() {
-            assert_label_valid(&label.as_ref());
-        }
         if let Some(num_workers) = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")) {
             std::env::set_var("RAYON_NUM_THREADS", num_workers.to_string());
         }
@@ -1342,7 +1368,6 @@ fn main() {
         cmd_export();
     } else if let Some(matches) = matches.subcommand_matches("transform") {
         env_logger::init();
-        let label = matches.value_of("label").map(|s| s.to_string());
         let delim = matches.value_of("delim").map(|s| s.to_string()).unwrap_or("_".to_string());
         let output = matches.value_of("output").map(|s| s.to_string());
         let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
@@ -1352,17 +1377,14 @@ fn main() {
             if labels.is_empty() {
                 vec!(None)
             } else {
-                labels.iter().map(|l| Some(l.clone())).collect()
+                labels.iter().map(|l| normalize_label(&Some(l.clone()))).collect()
             }
         } else {
             vec!(None)
         };
-        for label in labels.iter() {
-            assert_label_valid(&label.as_ref());
-        }
+        let labels = labels.iter().map(|label| normalize_label(&label)).collect();
         let text_fields: Option<Vec<String>> = matches.values_of("textfield").map(|v| v.map(|s| s.to_string()).collect());
         let label_fields: Option<Vec<String>> = matches.values_of("labelfield").map(|v| v.map(|s| s.to_string()).collect());
-        assert_label_valid(&label.as_ref());
         match matches.value_of("input") {
             Some(input) => {
                 cmd_transform(input.to_string(), output, mode, delim, labels, text_fields, label_fields);
