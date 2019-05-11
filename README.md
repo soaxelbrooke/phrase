@@ -155,6 +155,8 @@ A variety of environment variables can be used:
 
 `PRUNE_TO` - Controls what size n-gram mappings are pruned to during pruning.  Also sets the number of n-grams that are saved after counting (sorted by count).
 
+`BATCH_SIZE` - Controls the document batch size.  Causes input streams to be batched, allowing larger than memory datasets.  Default is 1000000.
+
 `MAX_NGRAM` - The highest n-gram size to count to, higher values cause slower counting, but allow for more specific and longer phrases. Default is 5.
 
 `MIN_NGRAM` - The lowest n-gram size to export, default is 1 (unigrams).
