@@ -460,7 +460,6 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Docum
             if let Some(group) = groups.get_mut(&label) {
                 group.push(labeled_document.text.clone());
             } else {
-                // assert_label_valid(&label.to_owned().as_ref());
                 groups.insert(label.clone(), vec!(labeled_document.text.clone()));
             }
         }

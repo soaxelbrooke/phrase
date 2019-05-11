@@ -29,11 +29,11 @@ N-gram counting is done continuously, providing batches of documents as they com
 
 ### Training a phrase model
 
-This example uses the `assets/reviews.csv` data in the repo, 10k app reviews:
+This example uses the `assets/reviews.json` data in the repo, 10k app reviews:
 
 ```
 $ head -1 assets/reviews.json
-{"body": "Woww! Moon Invoice is just so amazing. I don\u2019t think any such app exists that works so wonderfully. I am awestruck by the experience.", "category": "6000", "sentiment": "positive"}
+{"body": "Woww! Moon Invoice is just so amazing. I don\u2019t think any such app exists that works so wonderfully. I am awestruck by the experience.", "category": "Business", "sentiment": "positive"}
 ```
 
 First, you need to count n-grams from your data:
@@ -59,13 +59,13 @@ You can validate the phrases being learned per-label with the `show` command:
 ```
 $ phrase show -n 3
 
-Label=6009
+Label=News
 hash,ngram,score
 3178089391134982486,New Yorker,0.5142287028163096
 18070968419002659619,long form,0.5096737783425647
 16180697492236521925,sleep timer,0.5047391214969927
 
-Label=6000
+Label=Business
 hash,ngram,score
 4727477585106156155,iTimePunch Plus,0.55749203444841
 12483914742025992948,Crew Lounge,0.5479129370086021
@@ -79,7 +79,7 @@ hash,ngram,score
 ### Transforming Text
 
 ```
-$ echo "The weather channel is great for when I want to check the weather!" | phrase transform --label 6001 -
+$ echo "The weather channel is great for when I want to check the weather!" | phrase transform --label Weather -
 The Weather_Channel is great for when I_want_to check_the_weather!
 ```
 
@@ -99,21 +99,21 @@ It also accepts `--port` and `--host` parameters.
 
 ```
 $ curl localhost:6220/labels
-{"labels":["negative","positive","6000","6005","6001","6003","neutral","6009",null]}
+{"labels":["Social Networking","Travel","negative","Weather","positive","Business","News","neutral",null]}
 ```
 
 **POST /analyze** - identifies all significant phrases and terms found in the provided documents.
 
 ```
-$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["6001", "positive", null], "text": "The weather channel is great for when I want to check the weather!"}]}'
-[{"labels":["6001","positive"],"ngrams":["I want","I want to","I want to check","Weather Channel","channel","check","check the weather","want to","want to check","want to check the weather","weather","when I want","when I want to"],"text":"The weather channel is great for when I want to check the weather!"}]
+$ curl -XPOST localhost:6220/analyze -d '{"documents": [{"labels": ["Weather", "positive", null], "text": "The weather channel is great for when I want to check the weather!"}]}'
+[{"labels":["Weather","positive"],"ngrams":["I want","I want to","I want to check","Weather Channel","channel","check","check the weather","want to","want to check","want to check the weather","weather","when I want","when I want to"],"text":"The weather channel is great for when I want to check the weather!"}]
 ```
 
 **POST /transform** - eagerly replaces the longest phrases found in the provided documents.
 
 ```
-$ curl -XPOST localhost:6220/transform -d '{"documents": [{"labels": ["6001"], "text": "The weather channel is great for when I want to check the weather!"}]}'
-[{"label":"6001","text":"The Weather_Channel is great for when I_want_to check_the_weather!"}]
+$ curl -XPOST localhost:6220/transform -d '{"documents": [{"labels": ["Weather"], "text": "The weather channel is great for when I want to check the weather!"}]}'
+[{"label":"Weather","text":"The Weather_Channel is great for when I_want_to check_the_weather!"}]
 ```
 
 ## Labels
