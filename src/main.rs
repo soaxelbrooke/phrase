@@ -1324,7 +1324,7 @@ fn normalize_label(label: &Option<String>) -> Option<String> {
 
 fn main() {
     let matches = clap_app!(phrase => 
-        (version: "0.3.3")
+        (version: "0.3.4")
         (author: "Stuart Axelbrooke <stuart@axelbrooke.com>")
         (about: "Detect phrases in free text data.")
         (setting: clap::AppSettings::ArgRequiredElseHelp)
