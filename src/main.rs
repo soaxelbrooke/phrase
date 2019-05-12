@@ -20,6 +20,8 @@ use arrayvec::ArrayString;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
+use std::thread;
+use std::sync::mpsc::channel;
 
 // URL regex
 // [-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)
@@ -477,12 +479,8 @@ fn read_partition_scores_for_labels(labels: &Option<Vec<Option<String>>>, label_
     Ok(())
 }
 
-fn update_phrase_model(label: Option<String>, documents: &mut Vec<String>) -> std::io::Result<()> {
-    documents.sort();
-    documents.dedup();
-
+fn update_phrase_model(label: Option<String>, new_ngrams: &NGramCounts) -> std::io::Result<()> {
     let mut ngrams = read_partition_counts(&label.as_ref())?.unwrap_or(NGramCounts::new());
-    let new_ngrams = count_ngrams(&documents);
     if ngrams.len() > 0 {
         merge_ngrams_into(&new_ngrams, &mut ngrams);
         write_partition_counts(&label, &ngrams)?;
@@ -507,9 +505,12 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Docum
 
     debug!("Counting ngrams for labels: {:?}", groups.keys());
 
-    groups.par_iter_mut().for_each(move |(label, mut documents)| {
+    groups.iter_mut().for_each(move |(label, documents)| {
         let label = normalize_label(label);
-        update_phrase_model(label.clone(), &mut documents).expect("Thread failed in phrase model update");
+        documents.par_sort_unstable();
+        documents.dedup();
+        let new_ngrams = count_ngrams(&documents);
+        update_phrase_model(label.clone(), &new_ngrams).expect("Thread failed in phrase model update");
     });
 
     Ok(())
@@ -536,26 +537,37 @@ fn merge_ngrams_into_owned(from: NGramCounts, into: &mut NGramCounts) {
     }
 }
 
-fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut NGramCounts) {
-    let max_ngram = MAX_NGRAM.clone();
-    let mut doc_count = 0;
-    for document in documents {
-        count_document_ngrams(&document, ngrams, &max_ngram);
-        doc_count += 1;
-        if (doc_count % 1000) == 0 {
-            prune_ngrams(ngrams);
-        }
-    }
-}
-
 fn count_ngrams(documents: &Vec<String>) -> NGramCounts {
-    let mut ngrams = NGramCounts::new();
     debug!("Counting ngrams for {} documents.", documents.len());
-    count_ngrams_into(documents, &mut ngrams);
-    ngrams
+    let max_ngram = MAX_NGRAM.clone();
+
+    let (sender, receiver) = channel();
+
+    let collector = thread::spawn(move || {
+        let mut doc_count = 0;
+        let mut ngrams = NGramCounts::new();
+
+        // The channel is closed when all Senders have dropped, and then the
+        // Receiver will stop yielding.
+        for doc_ngrams in receiver {
+            merge_ngrams_into_owned(doc_ngrams, &mut ngrams);
+
+            doc_count += 1;
+            if (doc_count % 1000) == 0 {
+                prune_ngrams(&mut ngrams);
+            }
+        }
+        ngrams
+    });
+
+    documents.par_iter().for_each_with(sender, |s, document| {
+        s.send(count_document_ngrams(&document, &max_ngram)).unwrap();;
+    });
+
+    collector.join().unwrap()
 }
 
-fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
+fn count_document_ngrams(document: &String, max_ngram: &usize) -> NGramCounts {
     let mut doc_ngrams = NGramCounts::new();
     let delim = NGRAM_DELIM.clone();
 
@@ -605,8 +617,8 @@ fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram:
             }
         }
     }
-
-    merge_ngrams_into_owned(doc_ngrams, ngrams);
+    doc_ngrams
+    
 }
 
 fn prune_ngrams(ngrams: &mut NGramCounts) {
