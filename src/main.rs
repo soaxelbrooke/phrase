@@ -539,8 +539,11 @@ fn merge_ngrams_into_owned(from: NGramCounts, into: &mut NGramCounts) {
 fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut NGramCounts) {
     let max_ngram = MAX_NGRAM.clone();
     let mut doc_count = 0;
-    for document in documents {
-        count_document_ngrams(&document, ngrams, &max_ngram);
+    let doc_ngrams: Vec<NGramCounts> = documents.par_iter()
+        .map(move |document| extract_document_ngrams(document, &max_ngram))
+        .collect();
+    for doc_ngram in doc_ngrams {
+        merge_ngrams_into_owned(doc_ngram, ngrams);
         doc_count += 1;
         if (doc_count % 1000) == 0 {
             prune_ngrams(ngrams);
@@ -555,7 +558,7 @@ fn count_ngrams(documents: &Vec<String>) -> NGramCounts {
     ngrams
 }
 
-fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
+fn extract_document_ngrams(document: &String, max_ngram: &usize) -> NGramCounts {
     let mut doc_ngrams = NGramCounts::new();
     let delim = NGRAM_DELIM.clone();
 
@@ -606,6 +609,11 @@ fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram:
         }
     }
 
+    doc_ngrams
+}
+
+fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
+    let doc_ngrams = extract_document_ngrams(document, max_ngram);
     merge_ngrams_into_owned(doc_ngrams, ngrams);
 }
 
