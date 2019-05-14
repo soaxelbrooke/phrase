@@ -539,11 +539,18 @@ fn merge_ngrams_into_owned(from: NGramCounts, into: &mut NGramCounts) {
 fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut NGramCounts) {
     let max_ngram = MAX_NGRAM.clone();
     let mut doc_count = 0;
-    let doc_ngrams: Vec<NGramCounts> = documents.par_iter()
+    let doc_ngrams: Vec<Vec<NGram>> = documents.par_iter()
         .map(move |document| extract_document_ngrams(document, &max_ngram))
         .collect();
-    for doc_ngram in doc_ngrams {
-        merge_ngrams_into_owned(doc_ngram, ngrams);
+    for doc_ngrams in doc_ngrams {
+        for ngram in doc_ngrams {
+            if let Some(into_count) = ngrams.get_mut(&ngram) {
+                *into_count += 1;
+            } else {
+                ngrams.insert(ngram, 1);
+            }
+        }
+        // merge_ngrams_into_owned(doc_ngram, ngrams);
         doc_count += 1;
         if (doc_count % 1000) == 0 {
             prune_ngrams(ngrams);
@@ -558,8 +565,8 @@ fn count_ngrams(documents: &Vec<String>) -> NGramCounts {
     ngrams
 }
 
-fn extract_document_ngrams(document: &String, max_ngram: &usize) -> NGramCounts {
-    let mut doc_ngrams = NGramCounts::new();
+fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
+    let mut doc_ngrams: Vec<NGram> = vec!();
     let delim = NGRAM_DELIM.clone();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&document) {
@@ -601,7 +608,7 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> NGramCounts 
                         let string = token_queue.join(&delim);
                         if string.len() < NGRAM_MAX_CHARS {
                             let string = NGram::from(&string).expect("Couldn't build ArrayString from phrase");
-                            doc_ngrams.insert(string, 1);
+                            doc_ngrams.push(string);
                         }
                     }
                 }
@@ -609,13 +616,15 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> NGramCounts 
         }
     }
 
+    doc_ngrams.sort();
+    doc_ngrams.dedup();
     doc_ngrams
 }
 
-fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
-    let doc_ngrams = extract_document_ngrams(document, max_ngram);
-    merge_ngrams_into_owned(doc_ngrams, ngrams);
-}
+// fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
+//     let doc_ngrams = extract_document_ngrams(document, max_ngram);
+//     merge_ngrams_into_owned(doc_ngrams, ngrams);
+// }
 
 fn prune_ngrams(ngrams: &mut NGramCounts) {
     let ngrams_len = ngrams.len();
