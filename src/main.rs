@@ -16,7 +16,7 @@ use std::path::Path;
 use std::fs::File;
 use rust_stemmers::{Algorithm, Stemmer};
 use rocket_contrib::json::{Json, JsonValue};
-use arrayvec::ArrayString;
+use arrayvec::{ArrayString};
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -570,19 +570,18 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
     let delim = NGRAM_DELIM.clone();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&document) {
-        let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-        for i in 1..max_ngram+1 {
-            token_queues.push(VecDeque::with_capacity(i));
-        }
+        let mut ngrams: [NGram; 10] = [NGram::new(); 10];
+        let mut head = 0;
+        let chunk_bytes = chunk.as_bytes();
 
         for token in TOKEN_REGEX.find_iter(chunk) {
-            if let Some(preceding_byte) = chunk.as_bytes().get(token.start() - 1) {
+            if let Some(preceding_byte) = chunk_bytes.get(token.start() - 1) {
                 if preceding_byte == &64 /* @ */ || preceding_byte == &46 /* . */ || preceding_byte == &47 /* / */ || preceding_byte == &92 /* \ */ {
                     // Ignore tokens that are preceded by . or @ (since rust regex doesn't do look behind)
                     continue;
                 }
             }
-            if let Some(following_byte) = chunk.as_bytes().get(token.end() + 1) {
+            if let Some(following_byte) = chunk_bytes.get(token.end() + 1) {
                 if following_byte == &64 /* @ */ || following_byte == &46 /* . */ || following_byte == &47 /* / */ || following_byte == &92 /* \ */ {
                     // Ignore tokens that are followed by . or @ (since rust regex doesn't do look behind)
                     continue;
@@ -595,24 +594,18 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
                 continue;
             }
 
-            for i in 1..max_ngram+1 {
-                if let Some(token_queue) = token_queues.get_mut(i - 1) {
-                    
-                    token_queue.push_back(token_string.clone());
-                    if token_queue.len() > i {
-                        token_queue.pop_front();
-                    }
-
-                    if token_queue.len() == i {
-                        let token_queue: Vec<String> = token_queue.iter().map(|s| s.to_string()).collect();
-                        let string = token_queue.join(&delim);
-                        if string.len() < NGRAM_MAX_CHARS {
-                            let string = NGram::from(&string).expect("Couldn't build ArrayString from phrase");
-                            doc_ngrams.push(string);
-                        }
-                    }
+            for idx in 0..*max_ngram {
+                let position = (head + idx) % 10;
+                // TODO: handle "buffer too small" errors here more gracefully - realistically we don't care about phrases that are too long
+                if let Err(_e) = ngrams[position].try_push_str(token.as_str()) {
+                    continue;
+                } else {
+                    doc_ngrams.push(ngrams[position]);
+                    ngrams[position].try_push_str(&delim);
                 }
             }
+            ngrams[(head + max_ngram) % 10] = NGram::new();
+            head += 1;
         }
     }
 
@@ -620,11 +613,6 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
     doc_ngrams.dedup();
     doc_ngrams
 }
-
-// fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
-//     let doc_ngrams = extract_document_ngrams(document, max_ngram);
-//     merge_ngrams_into_owned(doc_ngrams, ngrams);
-// }
 
 fn prune_ngrams(ngrams: &mut NGramCounts) {
     let ngrams_len = ngrams.len();
