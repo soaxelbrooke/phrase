@@ -128,12 +128,12 @@ An example of a good label would be app category, as apps in each category are r
 
 It's fast.
 
-It takes ~1 second to count 1 to 5-grams for 10,000 reviews, and ~1.2 seconds to export. Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Intel Core i7-7820HQ (Ubuntu):
+It takes 0.66 second to count 1 to 5-grams for 10,000 reviews, and ~1.2 seconds to export. Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Intel Core i7-7820HQ (Ubuntu):
 
 |Task|Tokens per Second per Thread|
-|----|--------------------------|
-|Counting n-grams|298,286|
-|Exporting scored models|151,144|
+|----|----------------------------|
+|Counting n-grams|779,025|
+|Exporting scored models|206,704|
 |Labeling significant terms|354,395|
 |Phrase transformation|345,957|
 
