@@ -156,31 +156,40 @@ struct BatchedInputReader {
     reader: ReaderStrategy,
     batch_size: u64,
     mode: ParseMode,
+    text_fields: Vec<String>,
+    label_fields: Vec<String>,
+    labels: Vec<Option<String>>,
 }
 
 impl BatchedInputReader {
-    fn new(input: Input, mode: ParseMode, batch_size: u64) -> BatchedInputReader {
+    fn new(input: Input, mode: ParseMode, batch_size: u64, text_fields: Vec<String>, label_fields: Vec<String>, labels: Vec<Option<String>>) -> BatchedInputReader {
         if mode == ParseMode::CSV {
             BatchedInputReader {
                 reader: ReaderStrategy::CSV(csv::Reader::from_reader(input)),
                 mode: mode,
                 batch_size: batch_size,
+                text_fields: text_fields,
+                label_fields: label_fields,
+                labels: labels,
             }
         } else {
             BatchedInputReader {
                 reader: ReaderStrategy::File(BufReader::new(input)),
                 mode: mode,
                 batch_size: batch_size,
+                text_fields: text_fields,
+                label_fields: label_fields,
+                labels: labels,
             }
         }
     }
 
-    fn read_batch(&mut self, text_fields: &Vec<String>, label_fields: &Vec<String>, labels: Vec<Option<String>>) -> Option<Vec<Document>> {
+    fn read_batch(&mut self) -> Option<Vec<Document>> {
         let documents = match &mut self.reader {
-            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(reader, text_fields, label_fields, &self.batch_size).ok(),
+            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(reader, &self.text_fields, &self.label_fields, &self.batch_size).ok(),
             ReaderStrategy::File(ref mut reader) => match &self.mode {
-                ParseMode::JSON => read_documents_from_json(reader, text_fields, label_fields, &self.batch_size).ok(), 
-                ParseMode::PlainText => read_documents_from_plain(reader, labels, &self.batch_size).ok(),
+                ParseMode::JSON => read_documents_from_json(reader, &self.text_fields,&self.label_fields, &self.batch_size).ok(),
+                ParseMode::PlainText => read_documents_from_plain(reader, self.labels.clone(), &self.batch_size).ok(),
                 _ => None
             }
         };
@@ -188,6 +197,14 @@ impl BatchedInputReader {
             Some(vec) => if vec.is_empty() { None } else { Some(vec) },
             None => None,
         }
+    }
+}
+
+impl Iterator for BatchedInputReader {
+    type Item = Vec<Document>;
+
+    fn next(&mut self) -> Option<Vec<Document>> {
+        self.read_batch()
     }
 }
 
@@ -311,6 +328,8 @@ lazy_static! {
         read_partition_scores_for_labels(&Some(list_score_labels().unwrap()), &mut label_ngrams).expect("Unable to read partitions for labels");
         label_ngrams
     };
+
+    static ref FS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::from(());
 }
 
 fn ngram_from_str(s: &String) -> Option<NGram> {
@@ -477,20 +496,35 @@ fn read_partition_scores_for_labels(labels: &Option<Vec<Option<String>>>, label_
     Ok(())
 }
 
+fn merge_into_label_counts(label: &Option<String>, new_ngrams: NGramCounts) -> std::io::Result<()> {
+    let _lock = FS_LOCK.lock().expect("Couldn't take file system lock");
+    let path = match label {
+        Some(label) => format!("data/counts_label={}.csv", label),
+        None => String::from("data/counts_default.csv"),
+    };
+
+    let mut ngrams = {
+        if let Ok(mut file) = File::open(path.clone()) {
+            read_partition_counts_from_file(&mut file)?.unwrap_or(NGramCounts::new())
+        } else { NGramCounts::new() }
+    };
+
+    let mut file = File::create(path)?;
+    if ngrams.len() > 0 {
+        merge_ngrams_into(&new_ngrams, &mut ngrams);
+        write_partition_counts(&mut file, &ngrams)?;
+    } else {
+        write_partition_counts(&mut file, &new_ngrams)?;
+    }
+    Ok(())
+}
+
 fn update_phrase_model(label: Option<String>, documents: &mut Vec<String>) -> std::io::Result<()> {
     documents.sort();
     documents.dedup();
 
-    let mut ngrams = read_partition_counts(&label.as_ref())?.unwrap_or(NGramCounts::new());
     let new_ngrams = count_ngrams(&documents);
-    if ngrams.len() > 0 {
-        merge_ngrams_into(&new_ngrams, &mut ngrams);
-        write_partition_counts(&label, &ngrams)?;
-    } else {
-        write_partition_counts(&label, &new_ngrams)?;
-    }
-
-    Ok(())
+    merge_into_label_counts(&label, new_ngrams)
 }
 
 fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Document>) -> std::io::Result<()> {
@@ -632,21 +666,25 @@ fn read_partition_counts(label: &Option<&String>) -> std::io::Result<Option<NGra
     };
     let path = Path::new(&path_str);
     if path.exists() {
-        let mut reader = csv::Reader::from_path(path)?;
-        let mut ngrams = NGramCounts::new();
-        for row in reader.deserialize() {
-            if let Ok(ngram_count) = row {
-                let ngram_count: NGramCountRow = ngram_count;
-                if ngram_count.ngram.len() < NGRAM_MAX_CHARS {
-                    ngrams.insert(NGram::from(&ngram_count.ngram).expect("Couldn't construct ArrayString from ngram"), ngram_count.count);
-                }
-            }
-        }
-
-        Ok(Some(ngrams))
+        read_partition_counts_from_file(&mut File::open(path)?)
     } else {
         Ok(None)
     }
+}
+
+fn read_partition_counts_from_file(file: &mut File) -> std::io::Result<Option<NGramCounts>> {
+    let mut reader = csv::Reader::from_reader(file);
+    let mut ngrams = NGramCounts::new();
+    for row in reader.deserialize() {
+        if let Ok(ngram_count) = row {
+            let ngram_count: NGramCountRow = ngram_count;
+            if ngram_count.ngram.len() < NGRAM_MAX_CHARS {
+                ngrams.insert(NGram::from(&ngram_count.ngram).expect("Couldn't construct ArrayString from ngram"), ngram_count.count);
+            }
+        }
+    }
+
+    Ok(Some(ngrams))
 }
 
 fn read_partition_scores(label: &Option<&String>) -> std::io::Result<Option<NGramScores>> {
@@ -673,14 +711,8 @@ fn read_partition_scores(label: &Option<&String>) -> std::io::Result<Option<NGra
     }
 }
 
-fn write_partition_counts(label: &Option<String>, ngrams: &NGramCounts) -> std::io::Result<()> {
-    debug!("Writing partition {:?}.", &label);
-    let path_str: String = match label {
-        Some(label) => format!("data/counts_label={}.csv", label),
-        None => String::from("data/counts_default.csv"),
-    };
-    let mut writer = csv::Writer::from_path(path_str)?;
-
+fn write_partition_counts(file: &mut File, ngrams: &NGramCounts) -> std::io::Result<()> {
+    let mut writer = csv::Writer::from_writer(file);
     let mut rows: Vec<NGramCountRow> = vec!();
 
     for (phrase, count) in ngrams {
@@ -779,10 +811,10 @@ fn read_documents_from_plain(reader: &mut BufReader<Input>, labels: Vec<Option<S
 fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
     let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let mut batch_reader = BatchedInputReader::new(Input::stdin(), mode, BATCH_SIZE.clone());
+    let mut batch_reader = BatchedInputReader::new(Input::stdin(), mode, BATCH_SIZE.clone(), text_fields, label_fields, labels.clone());
 
     loop {
-        let documents = batch_reader.read_batch(&text_fields, &label_fields, labels.clone());
+        let documents = batch_reader.read_batch();
         if let Some(mut documents) = documents {
             debug!("Process batch of {} documents.", documents.len());
             update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
@@ -795,17 +827,22 @@ fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option
 fn count_file(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
     let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let mut batch_reader = BatchedInputReader::new(Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"), mode, BATCH_SIZE.clone());
+    let batch_reader = BatchedInputReader::new(Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"), mode, BATCH_SIZE.clone(), text_fields, label_fields, labels.clone());
 
-    loop {
-        let documents = batch_reader.read_batch(&text_fields, &label_fields, labels.clone());
-        if let Some(mut documents) = documents {
-            debug!("Process batch of {} documents.", documents.len());
-            update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
-        } else {
-            break;
-        }
-    }
+    batch_reader.par_bridge().for_each(|mut documents| {
+        debug!("Process batch of {} documents.", documents.len());
+        update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+    });
+
+    // loop {
+    //     let documents = batch_reader.read_batch();
+    //     if let Some(mut documents) = documents {
+    //         debug!("Process batch of {} documents.", documents.len());
+    //         update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+    //     } else {
+    //         break;
+    //     }
+    // }
 }
 
 fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
