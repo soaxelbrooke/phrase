@@ -153,7 +153,7 @@ A variety of environment variables can be used:
 
 `PRUNE_AT` - The size at which to prune the n=gram count mapping.  Useful for limiting memory usage, default is 5000000.
 
-`PRUNE_TO` - Controls what size n-gram mappings are pruned to during pruning.  Also sets the number of n-grams that are saved after counting (sorted by count).
+`PRUNE_TO` - Controls what size n-gram mappings are pruned to during pruning.  Also sets the number of n-grams that are saved after counting (sorted by count). Default is 2000000.
 
 `BATCH_SIZE` - Controls the document batch size.  Causes input streams to be batched, allowing larger than memory datasets.  Default is 1000000.
 

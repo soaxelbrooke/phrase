@@ -243,7 +243,7 @@ fn parse_env<T: std::str::FromStr + Clone + std::fmt::Debug>(key: &str, default:
 
 lazy_static! {
     static ref PRUNE_AT: usize = parse_env("PRUNE_AT", 5_000_000);
-    static ref PRUNE_TO: usize = parse_env("PRUNE_TO", 1_000_000);
+    static ref PRUNE_TO: usize = parse_env("PRUNE_TO", 2_000_000);
     static ref MAX_NGRAM: usize = parse_env("MAX_NGRAM", 5);
     static ref MIN_NGRAM: usize = parse_env("MIN_NGRAM", 1);
     static ref MIN_COUNT: i64 = parse_env("MIN_COUNT", 5);
@@ -613,13 +613,12 @@ fn prune_ngrams(ngrams: &mut NGramCounts) {
     let ngrams_len = ngrams.len();
     if ngrams_len > PRUNE_AT.clone() {
         debug!("Pruning ngrams of length {}.", ngrams_len);
-
-        let mut ngram_pairs: Vec<(&NGram, &i64)> = ngrams.iter().collect();
-        ngram_pairs.sort_by(|a, b| b.1.cmp(&a.1));
-
-        let stems_to_prune: Vec<NGram> = ngram_pairs.iter().skip(PRUNE_TO.clone()).map(|(phrase, _count)| phrase.to_owned().to_owned()).collect();
-        for stem in stems_to_prune.iter() {
-            ngrams.remove(stem);
+        let prune_to = PRUNE_TO.clone();
+        let mut prune_below: i64 = 1;
+        while ngrams.len() > prune_to {
+            debug!("Pruning ngrams with count {}", prune_below);
+            ngrams.retain(|_ngram, count| count > &mut prune_below);
+            prune_below += 1;
         }
         debug!("Pruned to {} ngrams.", ngrams.len());
     }
