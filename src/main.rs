@@ -544,13 +544,8 @@ fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut NGramCounts) {
         .collect();
     for doc_ngrams in doc_ngrams {
         for ngram in doc_ngrams {
-            if let Some(into_count) = ngrams.get_mut(&ngram) {
-                *into_count += 1;
-            } else {
-                ngrams.insert(ngram, 1);
-            }
+            *ngrams.entry(ngram).or_insert(0) += 1;
         }
-        // merge_ngrams_into_owned(doc_ngram, ngrams);
         doc_count += 1;
         if (doc_count % 1000) == 0 {
             prune_ngrams(ngrams);
