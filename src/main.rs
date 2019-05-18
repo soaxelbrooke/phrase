@@ -16,7 +16,7 @@ use std::path::Path;
 use std::fs::File;
 use rust_stemmers::{Algorithm, Stemmer};
 use rocket_contrib::json::{Json, JsonValue};
-use arrayvec::{ArrayString};
+use arrayvec::ArrayString;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -833,16 +833,6 @@ fn count_file(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fie
         debug!("Process batch of {} documents.", documents.len());
         update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
     });
-
-    // loop {
-    //     let documents = batch_reader.read_batch();
-    //     if let Some(mut documents) = documents {
-    //         debug!("Process batch of {} documents.", documents.len());
-    //         update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
-    //     } else {
-    //         break;
-    //     }
-    // }
 }
 
 fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
