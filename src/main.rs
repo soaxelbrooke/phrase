@@ -552,21 +552,13 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Docum
 fn merge_ngrams_into(from: &NGramCounts, into: &mut NGramCounts) {
     debug!("Merging {} ngrams into {} ngrams.", from.len(), into.len());
     for (ngram, count) in from {
-        if let Some(into_count) = into.get_mut(ngram) {
-            *into_count += count;
-        } else {
-            into.insert(ngram.clone(), count.clone());
-        }
+        *into.entry(*ngram).or_insert(0) += count;
     }
 }
 
 fn merge_ngrams_into_owned(from: NGramCounts, into: &mut NGramCounts) {
     for (ngram, count) in from {
-        if let Some(into_count) = into.get_mut(&ngram) {
-            *into_count += count;
-        } else {
-            into.insert(ngram, count);
-        }
+        *into.entry(ngram).or_insert(0) += count;
     }
 }
 
