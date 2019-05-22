@@ -156,31 +156,40 @@ struct BatchedInputReader {
     reader: ReaderStrategy,
     batch_size: u64,
     mode: ParseMode,
+    text_fields: Vec<String>,
+    label_fields: Vec<String>,
+    labels: Vec<Option<String>>,
 }
 
 impl BatchedInputReader {
-    fn new(input: Input, mode: ParseMode, batch_size: u64) -> BatchedInputReader {
+    fn new(input: Input, mode: ParseMode, batch_size: u64, text_fields: Vec<String>, label_fields: Vec<String>, labels: Vec<Option<String>>) -> BatchedInputReader {
         if mode == ParseMode::CSV {
             BatchedInputReader {
                 reader: ReaderStrategy::CSV(csv::Reader::from_reader(input)),
                 mode: mode,
                 batch_size: batch_size,
+                text_fields: text_fields,
+                label_fields: label_fields,
+                labels: labels,
             }
         } else {
             BatchedInputReader {
                 reader: ReaderStrategy::File(BufReader::new(input)),
                 mode: mode,
                 batch_size: batch_size,
+                text_fields: text_fields,
+                label_fields: label_fields,
+                labels: labels,
             }
         }
     }
 
-    fn read_batch(&mut self, text_fields: &Vec<String>, label_fields: &Vec<String>, labels: Vec<Option<String>>) -> Option<Vec<Document>> {
+    fn read_batch(&mut self) -> Option<Vec<Document>> {
         let documents = match &mut self.reader {
-            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(reader, text_fields, label_fields, &self.batch_size).ok(),
+            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(reader, &self.text_fields, &self.label_fields, &self.batch_size).ok(),
             ReaderStrategy::File(ref mut reader) => match &self.mode {
-                ParseMode::JSON => read_documents_from_json(reader, text_fields, label_fields, &self.batch_size).ok(), 
-                ParseMode::PlainText => read_documents_from_plain(reader, labels, &self.batch_size).ok(),
+                ParseMode::JSON => read_documents_from_json(reader, &self.text_fields,&self.label_fields, &self.batch_size).ok(),
+                ParseMode::PlainText => read_documents_from_plain(reader, self.labels.clone(), &self.batch_size).ok(),
                 _ => None
             }
         };
@@ -188,6 +197,14 @@ impl BatchedInputReader {
             Some(vec) => if vec.is_empty() { None } else { Some(vec) },
             None => None,
         }
+    }
+}
+
+impl Iterator for BatchedInputReader {
+    type Item = Vec<Document>;
+
+    fn next(&mut self) -> Option<Vec<Document>> {
+        self.read_batch()
     }
 }
 
@@ -243,7 +260,7 @@ fn parse_env<T: std::str::FromStr + Clone + std::fmt::Debug>(key: &str, default:
 
 lazy_static! {
     static ref PRUNE_AT: usize = parse_env("PRUNE_AT", 5_000_000);
-    static ref PRUNE_TO: usize = parse_env("PRUNE_TO", 1_000_000);
+    static ref PRUNE_TO: usize = parse_env("PRUNE_TO", 2_000_000);
     static ref MAX_NGRAM: usize = parse_env("MAX_NGRAM", 5);
     static ref MIN_NGRAM: usize = parse_env("MIN_NGRAM", 1);
     static ref MIN_COUNT: i64 = parse_env("MIN_COUNT", 5);
@@ -311,6 +328,8 @@ lazy_static! {
         read_partition_scores_for_labels(&Some(list_score_labels().unwrap()), &mut label_ngrams).expect("Unable to read partitions for labels");
         label_ngrams
     };
+
+    static ref FS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::from(());
 }
 
 fn ngram_from_str(s: &String) -> Option<NGram> {
@@ -477,20 +496,35 @@ fn read_partition_scores_for_labels(labels: &Option<Vec<Option<String>>>, label_
     Ok(())
 }
 
+fn merge_into_label_counts(label: &Option<String>, new_ngrams: NGramCounts) -> std::io::Result<()> {
+    let _lock = FS_LOCK.lock().expect("Couldn't take file system lock");
+    let path = match label {
+        Some(label) => format!("data/counts_label={}.csv", label),
+        None => String::from("data/counts_default.csv"),
+    };
+
+    let mut ngrams = {
+        if let Ok(mut file) = File::open(path.clone()) {
+            read_partition_counts_from_file(&mut file)?.unwrap_or(NGramCounts::new())
+        } else { NGramCounts::new() }
+    };
+
+    let mut file = File::create(path)?;
+    if ngrams.len() > 0 {
+        merge_ngrams_into(&new_ngrams, &mut ngrams);
+        write_partition_counts(&mut file, &ngrams)?;
+    } else {
+        write_partition_counts(&mut file, &new_ngrams)?;
+    }
+    Ok(())
+}
+
 fn update_phrase_model(label: Option<String>, documents: &mut Vec<String>) -> std::io::Result<()> {
     documents.sort();
     documents.dedup();
 
-    let mut ngrams = read_partition_counts(&label.as_ref())?.unwrap_or(NGramCounts::new());
     let new_ngrams = count_ngrams(&documents);
-    if ngrams.len() > 0 {
-        merge_ngrams_into(&new_ngrams, &mut ngrams);
-        write_partition_counts(&label, &ngrams)?;
-    } else {
-        write_partition_counts(&label, &new_ngrams)?;
-    }
-
-    Ok(())
+    merge_into_label_counts(&label, new_ngrams)
 }
 
 fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Document>) -> std::io::Result<()> {
@@ -518,29 +552,26 @@ fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Docum
 fn merge_ngrams_into(from: &NGramCounts, into: &mut NGramCounts) {
     debug!("Merging {} ngrams into {} ngrams.", from.len(), into.len());
     for (ngram, count) in from {
-        if let Some(into_count) = into.get_mut(ngram) {
-            *into_count += count;
-        } else {
-            into.insert(ngram.clone(), count.clone());
-        }
+        *into.entry(*ngram).or_insert(0) += count;
     }
 }
 
 fn merge_ngrams_into_owned(from: NGramCounts, into: &mut NGramCounts) {
     for (ngram, count) in from {
-        if let Some(into_count) = into.get_mut(&ngram) {
-            *into_count += count;
-        } else {
-            into.insert(ngram, count);
-        }
+        *into.entry(ngram).or_insert(0) += count;
     }
 }
 
 fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut NGramCounts) {
     let max_ngram = MAX_NGRAM.clone();
     let mut doc_count = 0;
-    for document in documents {
-        count_document_ngrams(&document, ngrams, &max_ngram);
+    let doc_ngrams: Vec<Vec<NGram>> = documents.par_iter()
+        .map(move |document| extract_document_ngrams(document, &max_ngram))
+        .collect();
+    for doc_ngrams in doc_ngrams {
+        for ngram in doc_ngrams {
+            *ngrams.entry(ngram).or_insert(0) += 1;
+        }
         doc_count += 1;
         if (doc_count % 1000) == 0 {
             prune_ngrams(ngrams);
@@ -555,24 +586,23 @@ fn count_ngrams(documents: &Vec<String>) -> NGramCounts {
     ngrams
 }
 
-fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram: &usize) {
-    let mut doc_ngrams = NGramCounts::new();
+fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
+    let mut doc_ngrams: Vec<NGram> = vec!();
     let delim = NGRAM_DELIM.clone();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&document) {
-        let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-        for i in 1..max_ngram+1 {
-            token_queues.push(VecDeque::with_capacity(i));
-        }
+        let mut ngrams: [NGram; 10] = [NGram::new(); 10];
+        let mut head = 0;
+        let chunk_bytes = chunk.as_bytes();
 
         for token in TOKEN_REGEX.find_iter(chunk) {
-            if let Some(preceding_byte) = chunk.as_bytes().get(token.start() - 1) {
+            if let Some(preceding_byte) = chunk_bytes.get(token.start() - 1) {
                 if preceding_byte == &64 /* @ */ || preceding_byte == &46 /* . */ || preceding_byte == &47 /* / */ || preceding_byte == &92 /* \ */ {
                     // Ignore tokens that are preceded by . or @ (since rust regex doesn't do look behind)
                     continue;
                 }
             }
-            if let Some(following_byte) = chunk.as_bytes().get(token.end() + 1) {
+            if let Some(following_byte) = chunk_bytes.get(token.end() + 1) {
                 if following_byte == &64 /* @ */ || following_byte == &46 /* . */ || following_byte == &47 /* / */ || following_byte == &92 /* \ */ {
                     // Ignore tokens that are followed by . or @ (since rust regex doesn't do look behind)
                     continue;
@@ -585,41 +615,36 @@ fn count_document_ngrams(document: &String, ngrams: &mut NGramCounts, max_ngram:
                 continue;
             }
 
-            for i in 1..max_ngram+1 {
-                if let Some(token_queue) = token_queues.get_mut(i - 1) {
-                    
-                    token_queue.push_back(token_string.clone());
-                    if token_queue.len() > i {
-                        token_queue.pop_front();
-                    }
-
-                    if token_queue.len() == i {
-                        let token_queue: Vec<String> = token_queue.iter().map(|s| s.to_string()).collect();
-                        let string = token_queue.join(&delim);
-                        if string.len() < NGRAM_MAX_CHARS {
-                            let string = NGram::from(&string).expect("Couldn't build ArrayString from phrase");
-                            doc_ngrams.insert(string, 1);
-                        }
-                    }
+            for idx in 0..*max_ngram {
+                let position = (head + idx) % 10;
+                // TODO: handle "buffer too small" errors here more gracefully - realistically we don't care about phrases that are too long
+                if let Err(_e) = ngrams[position].try_push_str(token.as_str()) {
+                    continue;
+                } else {
+                    doc_ngrams.push(ngrams[position]);
+                    ngrams[position].try_push_str(&delim);
                 }
             }
+            ngrams[(head + max_ngram) % 10] = NGram::new();
+            head += 1;
         }
     }
 
-    merge_ngrams_into_owned(doc_ngrams, ngrams);
+    doc_ngrams.sort();
+    doc_ngrams.dedup();
+    doc_ngrams
 }
 
 fn prune_ngrams(ngrams: &mut NGramCounts) {
     let ngrams_len = ngrams.len();
     if ngrams_len > PRUNE_AT.clone() {
         debug!("Pruning ngrams of length {}.", ngrams_len);
-
-        let mut ngram_pairs: Vec<(&NGram, &i64)> = ngrams.iter().collect();
-        ngram_pairs.sort_by(|a, b| b.1.cmp(&a.1));
-
-        let stems_to_prune: Vec<NGram> = ngram_pairs.iter().skip(PRUNE_TO.clone()).map(|(phrase, _count)| phrase.to_owned().to_owned()).collect();
-        for stem in stems_to_prune.iter() {
-            ngrams.remove(stem);
+        let prune_to = PRUNE_TO.clone();
+        let mut prune_below: i64 = 1;
+        while ngrams.len() > prune_to {
+            debug!("Pruning ngrams with count {}", prune_below);
+            ngrams.retain(|_ngram, count| count > &mut prune_below);
+            prune_below += 1;
         }
         debug!("Pruned to {} ngrams.", ngrams.len());
     }
@@ -633,21 +658,25 @@ fn read_partition_counts(label: &Option<&String>) -> std::io::Result<Option<NGra
     };
     let path = Path::new(&path_str);
     if path.exists() {
-        let mut reader = csv::Reader::from_path(path)?;
-        let mut ngrams = NGramCounts::new();
-        for row in reader.deserialize() {
-            if let Ok(ngram_count) = row {
-                let ngram_count: NGramCountRow = ngram_count;
-                if ngram_count.ngram.len() < NGRAM_MAX_CHARS {
-                    ngrams.insert(NGram::from(&ngram_count.ngram).expect("Couldn't construct ArrayString from ngram"), ngram_count.count);
-                }
-            }
-        }
-
-        Ok(Some(ngrams))
+        read_partition_counts_from_file(&mut File::open(path)?)
     } else {
         Ok(None)
     }
+}
+
+fn read_partition_counts_from_file(file: &mut File) -> std::io::Result<Option<NGramCounts>> {
+    let mut reader = csv::Reader::from_reader(file);
+    let mut ngrams = NGramCounts::new();
+    for row in reader.deserialize() {
+        if let Ok(ngram_count) = row {
+            let ngram_count: NGramCountRow = ngram_count;
+            if ngram_count.ngram.len() < NGRAM_MAX_CHARS {
+                ngrams.insert(NGram::from(&ngram_count.ngram).expect("Couldn't construct ArrayString from ngram"), ngram_count.count);
+            }
+        }
+    }
+
+    Ok(Some(ngrams))
 }
 
 fn read_partition_scores(label: &Option<&String>) -> std::io::Result<Option<NGramScores>> {
@@ -674,14 +703,8 @@ fn read_partition_scores(label: &Option<&String>) -> std::io::Result<Option<NGra
     }
 }
 
-fn write_partition_counts(label: &Option<String>, ngrams: &NGramCounts) -> std::io::Result<()> {
-    debug!("Writing partition {:?}.", &label);
-    let path_str: String = match label {
-        Some(label) => format!("data/counts_label={}.csv", label),
-        None => String::from("data/counts_default.csv"),
-    };
-    let mut writer = csv::Writer::from_path(path_str)?;
-
+fn write_partition_counts(file: &mut File, ngrams: &NGramCounts) -> std::io::Result<()> {
+    let mut writer = csv::Writer::from_writer(file);
     let mut rows: Vec<NGramCountRow> = vec!();
 
     for (phrase, count) in ngrams {
@@ -780,10 +803,10 @@ fn read_documents_from_plain(reader: &mut BufReader<Input>, labels: Vec<Option<S
 fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
     let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let mut batch_reader = BatchedInputReader::new(Input::stdin(), mode, BATCH_SIZE.clone());
+    let mut batch_reader = BatchedInputReader::new(Input::stdin(), mode, BATCH_SIZE.clone(), text_fields, label_fields, labels.clone());
 
     loop {
-        let documents = batch_reader.read_batch(&text_fields, &label_fields, labels.clone());
+        let documents = batch_reader.read_batch();
         if let Some(mut documents) = documents {
             debug!("Process batch of {} documents.", documents.len());
             update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
@@ -796,17 +819,12 @@ fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option
 fn count_file(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
     let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
     let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let mut batch_reader = BatchedInputReader::new(Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"), mode, BATCH_SIZE.clone());
+    let batch_reader = BatchedInputReader::new(Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"), mode, BATCH_SIZE.clone(), text_fields, label_fields, labels.clone());
 
-    loop {
-        let documents = batch_reader.read_batch(&text_fields, &label_fields, labels.clone());
-        if let Some(mut documents) = documents {
-            debug!("Process batch of {} documents.", documents.len());
-            update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
-        } else {
-            break;
-        }
-    }
+    batch_reader.par_bridge().for_each(|mut documents| {
+        debug!("Process batch of {} documents.", documents.len());
+        update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+    });
 }
 
 fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {

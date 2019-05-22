@@ -128,12 +128,12 @@ An example of a good label would be app category, as apps in each category are r
 
 It's fast.
 
-It takes ~1 second to count 1 to 5-grams for 10,000 reviews, and ~1.2 seconds to export. Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Intel Core i7-7820HQ (Ubuntu):
+It takes 0.66 second to count 1 to 5-grams for 10,000 reviews, and ~1.2 seconds to export. Performance is primarily based on n-gram size, the number of labels, and vocab size.  For example, labeling on iOS app category (23 labels) using default parameters on an Intel Core i7-7820HQ (Ubuntu):
 
 |Task|Tokens per Second per Thread|
-|----|--------------------------|
-|Counting n-grams|298,286|
-|Exporting scored models|151,144|
+|----|----------------------------|
+|Counting n-grams|779,025|
+|Exporting scored models|206,704|
 |Labeling significant terms|354,395|
 |Phrase transformation|345,957|
 
@@ -153,7 +153,7 @@ A variety of environment variables can be used:
 
 `PRUNE_AT` - The size at which to prune the n=gram count mapping.  Useful for limiting memory usage, default is 5000000.
 
-`PRUNE_TO` - Controls what size n-gram mappings are pruned to during pruning.  Also sets the number of n-grams that are saved after counting (sorted by count).
+`PRUNE_TO` - Controls what size n-gram mappings are pruned to during pruning.  Also sets the number of n-grams that are saved after counting (sorted by count). Default is 2000000.
 
 `BATCH_SIZE` - Controls the document batch size.  Causes input streams to be batched, allowing larger than memory datasets.  Default is 1000000.
 
