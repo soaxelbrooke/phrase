@@ -873,6 +873,8 @@ fn transform_inner(inbuf: &mut Input, outbuf: &mut Output, mode: ParseMode, deli
 fn transform_csv(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
     let mut reader = csv::Reader::from_reader(inbuf);
     let mut writer = csv::Writer::from_writer(outbuf);
+    writer.write_record(reader.headers().expect("Couldn't read header of input file"))
+        .expect("Couldn't write header");
     let text_idxs: Vec<usize> = header_indexes(&mut reader, text_fields);
     let label_idxs: Vec<usize> = header_indexes(&mut reader, label_fields);
     for record in reader.records() {
@@ -1342,7 +1344,7 @@ fn normalize_label(label: &Option<String>) -> Option<String> {
 
 fn main() {
     let matches = clap_app!(phrase => 
-        (version: "0.3.4")
+        (version: "0.3.5")
         (author: "Stuart Axelbrooke <stuart@axelbrooke.com>")
         (about: "Detect phrases in free text data.")
         (setting: clap::AppSettings::ArgRequiredElseHelp)
