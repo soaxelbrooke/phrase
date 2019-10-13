@@ -870,7 +870,7 @@ fn transform_inner(inbuf: &mut Input, outbuf: &mut Output, mode: ParseMode, deli
     }
 }
 
-fn transform_csv(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
+fn transform_csv(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
     let mut reader = csv::Reader::from_reader(inbuf);
     let mut writer = csv::Writer::from_writer(outbuf);
     writer.write_record(reader.headers().expect("Couldn't read header of input file"))
@@ -892,7 +892,7 @@ fn transform_csv(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: 
     }
 }
 
-fn transform_plain(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, labels: Vec<Option<String>>) {
+fn transform_plain(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write, delim: String, labels: Vec<Option<String>>) {
     let reader = BufReader::new(inbuf);
     for line in reader.lines() {
         writeln!(outbuf, "{}", transform_text(&delim, &labels, line.expect("Couldn't read plaintext line"))).expect("Couldn't write plaintext output");
@@ -900,7 +900,7 @@ fn transform_plain(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim
     outbuf.flush().expect("Couldn't flush output buffer");
 }
 
-fn transform_json(inbuf: &mut std::io::Read, outbuf: &mut std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
+fn transform_json(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
     let reader = BufReader::new(inbuf);
     for line in reader.lines() {
         if let Ok(object) = serde_json::from_str(&line.expect("Couldn't read JSON line")[..]) {
@@ -1158,7 +1158,7 @@ fn score_ngrams(ngram_counts: CanonicalizedNGramCounts, default_ngram_counts: &C
 
     let this_label_total_count: i64 = ngram_counts.iter()
                 .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
-                .map(|(_ngram_hash, ngram_count)| ngram_count.count).sum();;
+                .map(|(_ngram_hash, ngram_count)| ngram_count.count).sum();
     let this_label_total_count: f64 = this_label_total_count as f64;
 
     for (ngram_hash, ngram_count) in &ngram_counts {
@@ -1283,11 +1283,11 @@ fn npmi_phrase_score(corpus_size: &f64, ngram_count: &NGramCount, ngrams: &Canon
         let pj: f64 = count.clone() as f64 / corpus_size;
         let pau: f64 = ngrams.get(&left_unigram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
         let pas: f64 = ngrams.get(&right_subgram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
-        let pa = (pas * pau).sqrt();
         let pbs: f64 = ngrams.get(&left_subgram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
         let pbu: f64 = ngrams.get(&right_unigram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
-        let pb = (pbs * pbu).sqrt();
-        let score: f64 = (pj / pa / pb).ln() / -pj.ln();
+        let pmi_a: f64 = (pj / pau / pbs).ln();
+        let pmi_b: f64 = (pj / pbu / pas).ln();
+        let score = ((pmi_a + pmi_b) / 2f64) / -pj.ln();
 
         Some(score)
     } else {
