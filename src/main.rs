@@ -591,7 +591,7 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
     let delim = NGRAM_DELIM.clone();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&document) {
-        let mut ngrams: [NGram; 10] = [NGram::new(); 10];
+        let mut ngrams: [NGram; NGRAM_MAX_CHARS] = [NGram::new(); NGRAM_MAX_CHARS];
         let mut head = 0;
         let chunk_bytes = chunk.as_bytes();
 
@@ -616,7 +616,7 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
             }
 
             for idx in 0..*max_ngram {
-                let position = (head + idx) % 10;
+                let position = (head + idx) % NGRAM_MAX_CHARS;
                 // TODO: handle "buffer too small" errors here more gracefully - realistically we don't care about phrases that are too long
                 if let Err(_e) = ngrams[position].try_push_str(token.as_str()) {
                     continue;
@@ -625,7 +625,7 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
                     ngrams[position].try_push_str(&delim);
                 }
             }
-            ngrams[(head + max_ngram) % 10] = NGram::new();
+            ngrams[(head + max_ngram) % NGRAM_MAX_CHARS] = NGram::new();
             head += 1;
         }
     }
