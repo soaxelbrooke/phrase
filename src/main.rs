@@ -450,12 +450,9 @@ fn api_list_labels() -> JsonValue {
     }
 }
 
-fn serve(host: &str, port: u16) {
+fn serve() {
     println!("Starting phrase server");
-    let config = rocket::Config::build(rocket::config::Environment::Development)
-        .port(port).address(host).finalize().expect("Couldn't create config.");
-    rocket::custom(config)
-        .mount("/", routes![api_list_labels, api_analyze, api_transform])
+    rocket::ignite().mount("/", routes![api_list_labels, api_analyze, api_transform])
         .launch();
 }
 
@@ -553,12 +550,6 @@ fn merge_ngrams_into(from: &NGramCounts, into: &mut NGramCounts) {
     debug!("Merging {} ngrams into {} ngrams.", from.len(), into.len());
     for (ngram, count) in from {
         *into.entry(*ngram).or_insert(0) += count;
-    }
-}
-
-fn merge_ngrams_into_owned(from: NGramCounts, into: &mut NGramCounts) {
-    for (ngram, count) in from {
-        *into.entry(ngram).or_insert(0) += count;
     }
 }
 
@@ -1316,22 +1307,6 @@ fn cmd_show(labels: Vec<Option<String>>, num: usize) {
     }
 }
 
-fn label_valid(label: &Option<&String>) -> bool {
-    let label_regex = Regex::new("^[a-zA-Z0-9_-]+$").unwrap();
-    if let Some(label) = label {
-        label_regex.is_match(label)
-    } else {
-        return true;
-    }
-}
-
-fn assert_label_valid(label: &Option<&String>) {
-    if !label_valid(label) {
-        error!("Invalid label: `{}`", label.unwrap());
-        std::process::exit(1);
-    }
-}
-
 fn normalize_label(label: &Option<String>) -> Option<String> {
     if let Some(label) = label {
         let label = Regex::new(r"\&").unwrap().replace_all(label, "and").to_string();
@@ -1360,8 +1335,6 @@ fn main() {
         )
         (@subcommand serve =>
             (about: "Start API server")
-            (@arg port: -p --port +takes_value "Port to listen on (default 6220)")
-            (@arg host: --host +takes_value "Host to listen on (default localhost)")
         )
         (@subcommand export =>
             (about: "Export a model from the ngram counts for a given label")
@@ -1386,10 +1359,8 @@ fn main() {
         )
     ).get_matches();
 
-    if let Some(matches) = matches.subcommand_matches("serve") {
-        let port = matches.value_of("port").unwrap_or("6220").parse::<u16>().expect("Couldn't parse port.");
-        let host = matches.value_of("host").unwrap_or("localhost");
-        serve(host, port);
+    if let Some(_matches) = matches.subcommand_matches("serve") {
+        serve();
     } else if let Some(matches) = matches.subcommand_matches("count") {
         env_logger::init();
         let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
