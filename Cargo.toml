@@ -29,6 +29,6 @@ version = "0.4"
 features = ["std", "serde-1"]
 
 [dependencies.rocket_contrib]
-version = "0.4.0"
+version = "0.4"
 default-features = false
 features = ["json"]
