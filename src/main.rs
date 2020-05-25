@@ -1,25 +1,31 @@
 #![feature(proc_macro_hygiene, decl_macro)]
-#[macro_use] extern crate rocket;
-#[macro_use] extern crate rocket_contrib;
-#[macro_use] extern crate serde_derive;
-#[macro_use] extern crate clap;
-#[macro_use] extern crate log;
-#[macro_use] extern crate lazy_static;
+#[macro_use]
+extern crate rocket;
+#[macro_use]
+extern crate rocket_contrib;
+#[macro_use]
+extern crate serde_derive;
+#[macro_use]
+extern crate clap;
+#[macro_use]
+extern crate log;
+#[macro_use]
+extern crate lazy_static;
 
 extern crate env_logger;
 extern crate rust_stemmers; // see https://crates.io/crates/rust-stemmers
 
-use std::io::{BufReader, BufRead};
-use regex::{Regex, Match};
-use std::collections::{HashMap, VecDeque, HashSet};
-use std::path::Path;
-use std::fs::File;
-use rust_stemmers::{Algorithm, Stemmer};
-use rocket_contrib::json::{Json, JsonValue};
 use arrayvec::ArrayString;
 use rayon::prelude::*;
+use regex::{Match, Regex};
+use rocket_contrib::json::{Json, JsonValue};
+use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::File;
 use std::hash::Hasher;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
 // URL regex
 // [-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)
@@ -28,19 +34,19 @@ const NGRAM_MAX_CHARS: usize = 32;
 const LABEL_DELIM: char = ';';
 
 type StemmedNGram = NGram;
-type NGram = ArrayString<[u8;NGRAM_MAX_CHARS]>;
+type NGram = ArrayString<[u8; NGRAM_MAX_CHARS]>;
 type NGramHash = u64;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct NGramCount {
     ngram: NGram,
-    count: i64
+    count: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ScoredNGram {
     ngram: NGram,
-    score: f64
+    score: f64,
 }
 
 // Maps from stemmed ngram to a list of raw ngrams and their counts
@@ -62,7 +68,6 @@ struct NGramScoreRow {
     score: f64,
 }
 
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct Document {
     labels: Option<Vec<Option<String>>>,
@@ -78,29 +83,29 @@ struct AnalyzedDocument {
 
 #[derive(Deserialize, Debug, Clone)]
 struct ApiAnalyzeRequest {
-    documents: Vec<Document>
+    documents: Vec<Document>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct ApiTransformRequest {
-    documents: Vec<Document>
+    documents: Vec<Document>,
 }
 
 #[derive(Serialize)]
 struct ErrorResponse {
-    error: String
+    error: String,
 }
 
 #[derive(Serialize)]
 struct ApiListLabelsResponse {
-    labels: Vec<Option<String>>
+    labels: Vec<Option<String>>,
 }
 
 #[derive(PartialEq, Debug, Clone)]
 enum ParseMode {
     CSV,
     JSON,
-    PlainText
+    PlainText,
 }
 
 impl std::str::FromStr for ParseMode {
@@ -132,8 +137,14 @@ impl Input {
 
     fn from_arg(arg: Option<String>) -> std::io::Result<Input> {
         Ok(match arg {
-            None       => Input::stdin(),
-            Some(path) => if path == "-" { Input::stdin() } else { Input::file(path)? },
+            None => Input::stdin(),
+            Some(path) => {
+                if path == "-" {
+                    Input::stdin()
+                } else {
+                    Input::file(path)?
+                }
+            }
         })
     }
 }
@@ -142,7 +153,7 @@ impl std::io::Read for Input {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match *self {
             Input::Standard(ref mut s) => s.read(buf),
-            Input::File(ref mut f)     => f.read(buf),
+            Input::File(ref mut f) => f.read(buf),
         }
     }
 }
@@ -162,7 +173,14 @@ struct BatchedInputReader {
 }
 
 impl BatchedInputReader {
-    fn new(input: Input, mode: ParseMode, batch_size: u64, text_fields: Vec<String>, label_fields: Vec<String>, labels: Vec<Option<String>>) -> BatchedInputReader {
+    fn new(
+        input: Input,
+        mode: ParseMode,
+        batch_size: u64,
+        text_fields: Vec<String>,
+        label_fields: Vec<String>,
+        labels: Vec<Option<String>>,
+    ) -> BatchedInputReader {
         if mode == ParseMode::CSV {
             BatchedInputReader {
                 reader: ReaderStrategy::CSV(csv::Reader::from_reader(input)),
@@ -186,15 +204,35 @@ impl BatchedInputReader {
 
     fn read_batch(&mut self) -> Option<Vec<Document>> {
         let documents = match &mut self.reader {
-            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(reader, &self.text_fields, &self.label_fields, &self.batch_size).ok(),
+            ReaderStrategy::CSV(ref mut reader) => read_documents_from_csv(
+                reader,
+                &self.text_fields,
+                &self.label_fields,
+                &self.batch_size,
+            )
+            .ok(),
             ReaderStrategy::File(ref mut reader) => match &self.mode {
-                ParseMode::JSON => read_documents_from_json(reader, &self.text_fields,&self.label_fields, &self.batch_size).ok(),
-                ParseMode::PlainText => read_documents_from_plain(reader, self.labels.clone(), &self.batch_size).ok(),
-                _ => None
-            }
+                ParseMode::JSON => read_documents_from_json(
+                    reader,
+                    &self.text_fields,
+                    &self.label_fields,
+                    &self.batch_size,
+                )
+                .ok(),
+                ParseMode::PlainText => {
+                    read_documents_from_plain(reader, self.labels.clone(), &self.batch_size).ok()
+                }
+                _ => None,
+            },
         };
         match documents {
-            Some(vec) => if vec.is_empty() { None } else { Some(vec) },
+            Some(vec) => {
+                if vec.is_empty() {
+                    None
+                } else {
+                    Some(vec)
+                }
+            }
             None => None,
         }
     }
@@ -224,8 +262,14 @@ impl Output {
 
     fn from_arg(arg: Option<String>) -> std::io::Result<Output> {
         Ok(match arg {
-            None       => Output::stdout(),
-            Some(path) => if path == "-" { Output::stdout() } else { Output::file(path)? },
+            None => Output::stdout(),
+            Some(path) => {
+                if path == "-" {
+                    Output::stdout()
+                } else {
+                    Output::file(path)?
+                }
+            }
         })
     }
 }
@@ -234,28 +278,28 @@ impl std::io::Write for Output {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match *self {
             Output::Standard(ref mut s) => s.write(buf),
-            Output::File(ref mut f)     => f.write(buf),
+            Output::File(ref mut f) => f.write(buf),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         match *self {
             Output::Standard(ref mut s) => s.flush(),
-            Output::File(ref mut f)     => f.flush(),
+            Output::File(ref mut f) => f.flush(),
         }
     }
 }
 
 fn parse_env<T: std::str::FromStr + Clone + std::fmt::Debug>(key: &str, default: T) -> T {
-    std::env::var(key).map(|s| {
-        match T::from_str(&s) {
+    std::env::var(key)
+        .map(|s| match T::from_str(&s) {
             Ok(v) => v,
             Err(_err) => {
                 error!("Couldn't parse env var {}", key);
                 default.to_owned()
-            },
-        }
-    }).unwrap_or(default.to_owned())
+            }
+        })
+        .unwrap_or(default.to_owned())
 }
 
 lazy_static! {
@@ -268,15 +312,16 @@ lazy_static! {
     static ref MAX_EXPORT: u32 = parse_env("MAX_EXPORT", 250_000);
     static ref NGRAM_DELIM: String = std::env::var("NGRAM_DELIM").unwrap_or(" ".to_string());
     static ref BATCH_SIZE: u64 = parse_env("BATCH_SIZE", 1_000_000);
-
     static ref HEAD_UNIGRAM_IGNORES: HashSet<String> = std::env::var("HEAD_IGNORES")
         .unwrap_or("the,a,is,and,of,to".to_string())
-        .split(",").map(|s| s.to_string()).collect();
-
+        .split(",")
+        .map(|s| s.to_string())
+        .collect();
     static ref TAIL_UNIGRAM_IGNORES: HashSet<String> = std::env::var("TAIL_IGNORES")
         .unwrap_or("the,a,i,is,you,and,my,so,for".to_string())
-        .split(",").map(|s| s.to_string()).collect();
-
+        .split(",")
+        .map(|s| s.to_string())
+        .collect();
     static ref STEMMER: Stemmer = {
         let algorithm: Algorithm = match &std::env::var("LANG").unwrap_or("en".to_string())[..2] {
             "ar" => Algorithm::Arabic,
@@ -296,7 +341,8 @@ lazy_static! {
             "sv" => Algorithm::Swedish,
             "ta" => Algorithm::Tamil,
             "tk" => Algorithm::Turkish,
-            _ => panic!(r#"Invalid stemming language, please let LANG one of the following:
+            _ => panic!(
+                r#"Invalid stemming language, please let LANG one of the following:
     "ar" => Arabic
     "da" => Danish
     "nl" => Dutch
@@ -314,21 +360,25 @@ lazy_static! {
     "sv" => Swedish
     "ta" => Tamil
     "tk" => Turkish
-"#),
-    };
+"#
+            ),
+        };
         Stemmer::create(algorithm)
     };
-    static ref TOKEN_REGEX: Regex = Regex::new(&std::env::var("TOKEN_REGEX").unwrap_or(r"\b[\w+'’]+\b".to_string())).unwrap();
-    static ref CHUNK_SPLIT_REGEX: Regex = Regex::new(&std::env::var("CHUNK_SPLIT_REGEX").unwrap_or(r"[\.\?!\(\);]+".to_string())).unwrap();
+    static ref TOKEN_REGEX: Regex =
+        Regex::new(&std::env::var("TOKEN_REGEX").unwrap_or(r"\b[\w+'’]+\b".to_string())).unwrap();
+    static ref CHUNK_SPLIT_REGEX: Regex =
+        Regex::new(&std::env::var("CHUNK_SPLIT_REGEX").unwrap_or(r"[\.\?!\(\);]+".to_string()))
+            .unwrap();
 }
 
 lazy_static! {
     static ref SCORES: HashMap<Option<String>, NGramScores> = {
         let mut label_ngrams = HashMap::new();
-        read_partition_scores_for_labels(&Some(list_score_labels().unwrap()), &mut label_ngrams).expect("Unable to read partitions for labels");
+        read_partition_scores_for_labels(&Some(list_score_labels().unwrap()), &mut label_ngrams)
+            .expect("Unable to read partitions for labels");
         label_ngrams
     };
-
     static ref FS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::from(());
 }
 
@@ -356,27 +406,38 @@ fn ngram_hash_vec(token_vec: &Vec<String>) -> NGramHash {
 /// Hashes an ngram, does stem for you.
 fn hash_ngram(ngram: &NGram) -> NGramHash {
     let ngram_delim = NGRAM_DELIM.clone();
-    ngram_hash_vec(&ngram.split(&ngram_delim).map(|s| STEMMER.stem(&s.to_lowercase()).to_string()).collect())
+    ngram_hash_vec(
+        &ngram
+            .split(&ngram_delim)
+            .map(|s| STEMMER.stem(&s.to_lowercase()).to_string())
+            .collect(),
+    )
 }
 
-fn analyze_text(text: &String, scores: &NGramScores, max_ngram: &usize, min_score: &f64) -> Vec<String> {
-    let mut significant_ngrams: Vec<NGram> = vec!();
+fn analyze_text(
+    text: &String,
+    scores: &NGramScores,
+    max_ngram: &usize,
+    min_score: &f64,
+) -> Vec<String> {
+    let mut significant_ngrams: Vec<NGram> = vec![];
 
     for chunk in CHUNK_SPLIT_REGEX.split(&text) {
         let mut token_queues: Vec<VecDeque<String>> = Vec::new();
-        for i in 1..max_ngram+1 {
+        for i in 1..max_ngram + 1 {
             token_queues.push(VecDeque::with_capacity(i));
         }
         for token in TOKEN_REGEX.find_iter(chunk) {
             let token_string = re_match_stem(token);
-            for i in 1..max_ngram+1 {
+            for i in 1..max_ngram + 1 {
                 if let Some(queue) = token_queues.get_mut(i - 1) {
                     queue.push_back(token_string.to_owned());
                     if queue.len() > i {
                         queue.pop_front();
                     }
                     if queue.len() == i {
-                        let ngram_hash = ngram_hash_vec(&queue.iter().map(|s| s.to_string()).collect());
+                        let ngram_hash =
+                            ngram_hash_vec(&queue.iter().map(|s| s.to_string()).collect());
                         if let Some(scored_ngram) = scores.get(&ngram_hash) {
                             if &scored_ngram.score > min_score {
                                 significant_ngrams.push(scored_ngram.ngram);
@@ -399,38 +460,41 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
     let mut documents = data.0.documents.clone();
     let max_ngram = MAX_NGRAM.clone();
     let min_score = MIN_SCORE.clone();
-    let analyzed_docs: Vec<AnalyzedDocument> = documents.iter_mut().map(|d| {
-        let mut labels: Vec<Option<String>> = vec!();
-        if let Some(doc_labels) = &d.labels {
-            for label in doc_labels {
-                labels.push(label.to_owned());
+    let analyzed_docs: Vec<AnalyzedDocument> = documents
+        .iter_mut()
+        .map(|d| {
+            let mut labels: Vec<Option<String>> = vec![];
+            if let Some(doc_labels) = &d.labels {
+                for label in doc_labels {
+                    labels.push(label.to_owned());
+                }
+            } else {
+                labels = vec![None];
             }
-        } else {
-            labels = vec!(None);
-        }
-        
-        let mut significant_terms = vec!();
-        for label in &labels {
-            if let Some(scores) = SCORES.get(label) {
-                significant_terms.extend(analyze_text(&d.text, scores, &max_ngram, &min_score));
+
+            let mut significant_terms = vec![];
+            for label in &labels {
+                if let Some(scores) = SCORES.get(label) {
+                    significant_terms.extend(analyze_text(&d.text, scores, &max_ngram, &min_score));
+                }
             }
-        }
-        AnalyzedDocument {
-            labels: labels,
-            text: d.text.to_owned(),
-            ngrams: significant_terms,
-        }
-    }).collect();
+            AnalyzedDocument {
+                labels: labels,
+                text: d.text.to_owned(),
+                ngrams: significant_terms,
+            }
+        })
+        .collect();
     json!(analyzed_docs)
 }
 
 #[post("/transform?<delim>", data = "<data>")]
 fn api_transform(delim: Option<String>, data: Json<ApiTransformRequest>) -> JsonValue {
-    let mut transformed_docs: Vec<Document> = vec!();
+    let mut transformed_docs: Vec<Document> = vec![];
     let delim = delim.unwrap_or("_".to_string());
 
     for doc in data.0.documents {
-        let labels = doc.labels.unwrap_or(vec!(None));
+        let labels = doc.labels.unwrap_or(vec![None]);
         let transformed = transform_text(&delim, &labels, doc.text);
         transformed_docs.push(Document {
             text: transformed,
@@ -446,21 +510,29 @@ fn api_list_labels() -> JsonValue {
     if let Ok(labels) = list_score_labels() {
         json!(ApiListLabelsResponse { labels: labels })
     } else {
-        json!(ErrorResponse { error: "Couldn't list labels.".to_string() })
+        json!(ErrorResponse {
+            error: "Couldn't list labels.".to_string()
+        })
     }
 }
 
 fn serve() {
     println!("Starting phrase server");
-    rocket::ignite().mount("/", routes![api_list_labels, api_analyze, api_transform])
+    rocket::ignite()
+        .mount("/", routes![api_list_labels, api_analyze, api_transform])
         .launch();
 }
 
 fn re_match_stem(re_match: Match) -> String {
-    STEMMER.stem(&re_match.as_str().replace('’', "'").to_lowercase()).to_string()
+    STEMMER
+        .stem(&re_match.as_str().replace('’', "'").to_lowercase())
+        .to_string()
 }
 
-fn read_partition_counts_for_labels(labels: &Vec<Option<String>>, label_ngrams: &mut HashMap<Option<String>, NGramCounts>) -> std::io::Result<()> {
+fn read_partition_counts_for_labels(
+    labels: &Vec<Option<String>>,
+    label_ngrams: &mut HashMap<Option<String>, NGramCounts>,
+) -> std::io::Result<()> {
     for label in labels {
         let ngrams = match read_partition_counts(&label.as_ref()) {
             Ok(Some(ngrams)) => ngrams,
@@ -472,7 +544,10 @@ fn read_partition_counts_for_labels(labels: &Vec<Option<String>>, label_ngrams: 
     Ok(())
 }
 
-fn read_partition_scores_for_labels(labels: &Option<Vec<Option<String>>>, label_scores: &mut HashMap<Option<String>, NGramScores>) -> std::io::Result<()> {
+fn read_partition_scores_for_labels(
+    labels: &Option<Vec<Option<String>>>,
+    label_scores: &mut HashMap<Option<String>, NGramScores>,
+) -> std::io::Result<()> {
     if let Some(labels) = labels {
         for label in labels {
             let scores = match read_partition_scores(&label.as_ref()) {
@@ -503,7 +578,9 @@ fn merge_into_label_counts(label: &Option<String>, new_ngrams: NGramCounts) -> s
     let mut ngrams = {
         if let Ok(mut file) = File::open(path.clone()) {
             read_partition_counts_from_file(&mut file)?.unwrap_or(NGramCounts::new())
-        } else { NGramCounts::new() }
+        } else {
+            NGramCounts::new()
+        }
     };
 
     let mut file = File::create(path)?;
@@ -524,24 +601,29 @@ fn update_phrase_model(label: Option<String>, documents: &mut Vec<String>) -> st
     merge_into_label_counts(&label, new_ngrams)
 }
 
-fn update_phrase_models_from_labeled_documents(labeled_documents: &mut Vec<Document>) -> std::io::Result<()> {
+fn update_phrase_models_from_labeled_documents(
+    labeled_documents: &mut Vec<Document>,
+) -> std::io::Result<()> {
     let mut groups: HashMap<Option<String>, Vec<String>> = HashMap::new();
     for labeled_document in labeled_documents.iter() {
-        for label in labeled_document.labels.clone().unwrap_or(vec!(None)).iter() {
+        for label in labeled_document.labels.clone().unwrap_or(vec![None]).iter() {
             if let Some(group) = groups.get_mut(&label) {
                 group.push(labeled_document.text.clone());
             } else {
-                groups.insert(label.clone(), vec!(labeled_document.text.clone()));
+                groups.insert(label.clone(), vec![labeled_document.text.clone()]);
             }
         }
     }
 
     debug!("Counting ngrams for labels: {:?}", groups.keys());
 
-    groups.par_iter_mut().for_each(move |(label, mut documents)| {
-        let label = normalize_label(label);
-        update_phrase_model(label.clone(), &mut documents).expect("Thread failed in phrase model update");
-    });
+    groups
+        .par_iter_mut()
+        .for_each(move |(label, mut documents)| {
+            let label = normalize_label(label);
+            update_phrase_model(label.clone(), &mut documents)
+                .expect("Thread failed in phrase model update");
+        });
 
     Ok(())
 }
@@ -556,7 +638,8 @@ fn merge_ngrams_into(from: &NGramCounts, into: &mut NGramCounts) {
 fn count_ngrams_into(documents: &Vec<String>, ngrams: &mut NGramCounts) {
     let max_ngram = MAX_NGRAM.clone();
     let mut doc_count = 0;
-    let doc_ngrams: Vec<Vec<NGram>> = documents.par_iter()
+    let doc_ngrams: Vec<Vec<NGram>> = documents
+        .par_iter()
         .map(move |document| extract_document_ngrams(document, &max_ngram))
         .collect();
     for doc_ngrams in doc_ngrams {
@@ -578,7 +661,7 @@ fn count_ngrams(documents: &Vec<String>) -> NGramCounts {
 }
 
 fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
-    let mut doc_ngrams: Vec<NGram> = vec!();
+    let mut doc_ngrams: Vec<NGram> = vec![];
     let delim = NGRAM_DELIM.clone();
 
     for chunk in CHUNK_SPLIT_REGEX.split(&document) {
@@ -588,13 +671,17 @@ fn extract_document_ngrams(document: &String, max_ngram: &usize) -> Vec<NGram> {
 
         for token in TOKEN_REGEX.find_iter(chunk) {
             if let Some(preceding_byte) = chunk_bytes.get(token.start() - 1) {
-                if preceding_byte == &64 /* @ */ || preceding_byte == &46 /* . */ || preceding_byte == &47 /* / */ || preceding_byte == &92 /* \ */ {
+                if preceding_byte == &64 /* @ */ || preceding_byte == &46 /* . */ || preceding_byte == &47 /* / */ || preceding_byte == &92
+                /* \ */
+                {
                     // Ignore tokens that are preceded by . or @ (since rust regex doesn't do look behind)
                     continue;
                 }
             }
             if let Some(following_byte) = chunk_bytes.get(token.end() + 1) {
-                if following_byte == &64 /* @ */ || following_byte == &46 /* . */ || following_byte == &47 /* / */ || following_byte == &92 /* \ */ {
+                if following_byte == &64 /* @ */ || following_byte == &46 /* . */ || following_byte == &47 /* / */ || following_byte == &92
+                /* \ */
+                {
                     // Ignore tokens that are followed by . or @ (since rust regex doesn't do look behind)
                     continue;
                 }
@@ -662,7 +749,11 @@ fn read_partition_counts_from_file(file: &mut File) -> std::io::Result<Option<NG
         if let Ok(ngram_count) = row {
             let ngram_count: NGramCountRow = ngram_count;
             if ngram_count.ngram.len() < NGRAM_MAX_CHARS {
-                ngrams.insert(NGram::from(&ngram_count.ngram).expect("Couldn't construct ArrayString from ngram"), ngram_count.count);
+                ngrams.insert(
+                    NGram::from(&ngram_count.ngram)
+                        .expect("Couldn't construct ArrayString from ngram"),
+                    ngram_count.count,
+                );
             }
         }
     }
@@ -683,7 +774,13 @@ fn read_partition_scores(label: &Option<&String>) -> std::io::Result<Option<NGra
             if let Ok(row) = row {
                 let ngram_score: NGramScoreRow = row;
                 if let Some(ngram) = ngram_from_str(&ngram_score.ngram) {
-                    scores.insert(ngram_score.hash, ScoredNGram { ngram: ngram, score: ngram_score.score });
+                    scores.insert(
+                        ngram_score.hash,
+                        ScoredNGram {
+                            ngram: ngram,
+                            score: ngram_score.score,
+                        },
+                    );
                 }
             }
         }
@@ -696,11 +793,14 @@ fn read_partition_scores(label: &Option<&String>) -> std::io::Result<Option<NGra
 
 fn write_partition_counts(file: &mut File, ngrams: &NGramCounts) -> std::io::Result<()> {
     let mut writer = csv::Writer::from_writer(file);
-    let mut rows: Vec<NGramCountRow> = vec!();
+    let mut rows: Vec<NGramCountRow> = vec![];
 
     for (phrase, count) in ngrams {
         if count > &1 {
-            rows.push(NGramCountRow { ngram: phrase.to_string(), count: *count});
+            rows.push(NGramCountRow {
+                ngram: phrase.to_string(),
+                count: *count,
+            });
         }
     }
 
@@ -713,9 +813,17 @@ fn write_partition_counts(file: &mut File, ngrams: &NGramCounts) -> std::io::Res
     Ok(())
 }
 
-fn header_indexes<R: std::io::Read>(reader: &mut csv::Reader<R>, fields: &Vec<String>) -> Vec<usize> {
-    let mut indexes = vec!();
-    for (idx, header) in reader.headers().expect("Couldn't read CSV reader header").iter().enumerate() {
+fn header_indexes<R: std::io::Read>(
+    reader: &mut csv::Reader<R>,
+    fields: &Vec<String>,
+) -> Vec<usize> {
+    let mut indexes = vec![];
+    for (idx, header) in reader
+        .headers()
+        .expect("Couldn't read CSV reader header")
+        .iter()
+        .enumerate()
+    {
         if fields.contains(&header.to_string()) {
             indexes.push(idx);
         }
@@ -723,7 +831,12 @@ fn header_indexes<R: std::io::Read>(reader: &mut csv::Reader<R>, fields: &Vec<St
     indexes
 }
 
-fn read_documents_from_csv(csv_reader: &mut csv::Reader<Input>, text_fields: &Vec<String>, label_fields: &Vec<String>, limit: &u64) -> Result<Vec<Document>, ()> {
+fn read_documents_from_csv(
+    csv_reader: &mut csv::Reader<Input>,
+    text_fields: &Vec<String>,
+    label_fields: &Vec<String>,
+    limit: &u64,
+) -> Result<Vec<Document>, ()> {
     let text_idxs: Vec<usize> = header_indexes(csv_reader, text_fields);
     let label_idxs: Vec<usize> = header_indexes(csv_reader, label_fields);
     if text_idxs.is_empty() {
@@ -734,32 +847,42 @@ fn read_documents_from_csv(csv_reader: &mut csv::Reader<Input>, text_fields: &Ve
         error!("Didn't find label_field in the CSV header!");
         return Err(());
     }
-    let mut documents = vec!();
+    let mut documents = vec![];
     for record in csv_reader.records().take(limit.clone() as usize) {
         let record = record.expect("Couldn't parse row");
-        let labels: Vec<Option<String>> = label_idxs.iter().map(|idx| record.get(idx.clone()).map(|s| s.to_string())).collect();
+        let labels: Vec<Option<String>> = label_idxs
+            .iter()
+            .map(|idx| record.get(idx.clone()).map(|s| s.to_string()))
+            .collect();
         for text_idx in text_idxs.iter() {
             if let Some(text) = record.get(text_idx.clone()) {
                 documents.push(Document {
-                    text: text.to_string(), 
+                    text: text.to_string(),
                     labels: Some(labels.clone()),
                 });
             } else {
                 error!("Couldn't get column {} from CSV", text_idx);
             }
         }
-        
     }
     Ok(documents)
 }
 
-fn read_documents_from_json(reader: &mut BufReader<Input>, text_fields: &Vec<String>, label_fields: &Vec<String>, limit: &u64) -> Result<Vec<Document>, ()> {
-    let mut documents: Vec<Document> = vec!();
+fn read_documents_from_json(
+    reader: &mut BufReader<Input>,
+    text_fields: &Vec<String>,
+    label_fields: &Vec<String>,
+    limit: &u64,
+) -> Result<Vec<Document>, ()> {
+    let mut documents: Vec<Document> = vec![];
     for line in reader.lines().take(limit.clone() as usize) {
         if let Ok(line) = line {
             if let Ok(object) = serde_json::from_str(&line[..]) {
                 let object: serde_json::Value = object;
-                let labels: Vec<Option<String>> = label_fields.iter().map(|l| object[l].as_str().map(|s| s.to_string())).collect();
+                let labels: Vec<Option<String>> = label_fields
+                    .iter()
+                    .map(|l| object[l].as_str().map(|s| s.to_string()))
+                    .collect();
                 for text_field in text_fields {
                     let text = object[text_field].as_str();
                     documents.push(Document {
@@ -779,46 +902,88 @@ fn read_documents_from_json(reader: &mut BufReader<Input>, text_fields: &Vec<Str
     Ok(documents)
 }
 
-fn read_documents_from_plain(reader: &mut BufReader<Input>, labels: Vec<Option<String>>, limit: &u64) -> std::io::Result<Vec<Document>> {
-    let mut documents: Vec<Document> = vec!();
+fn read_documents_from_plain(
+    reader: &mut BufReader<Input>,
+    labels: Vec<Option<String>>,
+    limit: &u64,
+) -> std::io::Result<Vec<Document>> {
+    let mut documents: Vec<Document> = vec![];
     for line in reader.lines().take(limit.clone() as usize) {
         let line: String = line?;
         documents.push(Document {
             text: line.clone(),
-            labels: Some(labels.iter().map(|s| s.clone().map(|ss| ss.to_string())).collect()),
+            labels: Some(
+                labels
+                    .iter()
+                    .map(|s| s.clone().map(|ss| ss.to_string()))
+                    .collect(),
+            ),
         });
     }
     Ok(documents)
 }
 
-fn count_stdin(labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
-    let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
-    let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let mut batch_reader = BatchedInputReader::new(Input::stdin(), mode, BATCH_SIZE.clone(), text_fields, label_fields, labels.clone());
+fn count_stdin(
+    labels: Vec<Option<String>>,
+    mode: ParseMode,
+    text_fields: Option<Vec<String>>,
+    label_fields: Option<Vec<String>>,
+) {
+    let text_fields = text_fields.unwrap_or(vec!["text".to_string()]);
+    let label_fields = label_fields.unwrap_or(vec!["label".to_string()]);
+    let mut batch_reader = BatchedInputReader::new(
+        Input::stdin(),
+        mode,
+        BATCH_SIZE.clone(),
+        text_fields,
+        label_fields,
+        labels.clone(),
+    );
 
     loop {
         let documents = batch_reader.read_batch();
         if let Some(mut documents) = documents {
             debug!("Process batch of {} documents.", documents.len());
-            update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+            update_phrase_models_from_labeled_documents(&mut documents)
+                .expect("Failed to update phrase models.");
         } else {
             break;
         }
     }
 }
 
-fn count_file(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
-    let text_fields = text_fields.unwrap_or(vec!("text".to_string()));
-    let label_fields = label_fields.unwrap_or(vec!("label".to_string()));
-    let batch_reader = BatchedInputReader::new(Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"), mode, BATCH_SIZE.clone(), text_fields, label_fields, labels.clone());
+fn count_file(
+    path: &str,
+    labels: Vec<Option<String>>,
+    mode: ParseMode,
+    text_fields: Option<Vec<String>>,
+    label_fields: Option<Vec<String>>,
+) {
+    let text_fields = text_fields.unwrap_or(vec!["text".to_string()]);
+    let label_fields = label_fields.unwrap_or(vec!["label".to_string()]);
+    let batch_reader = BatchedInputReader::new(
+        Input::file(path.to_string()).expect("Couldn't open file for counting ngrams"),
+        mode,
+        BATCH_SIZE.clone(),
+        text_fields,
+        label_fields,
+        labels.clone(),
+    );
 
     batch_reader.par_bridge().for_each(|mut documents| {
         debug!("Process batch of {} documents.", documents.len());
-        update_phrase_models_from_labeled_documents(&mut documents).expect("Failed to update phrase models.");
+        update_phrase_models_from_labeled_documents(&mut documents)
+            .expect("Failed to update phrase models.");
     });
 }
 
-fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+fn cmd_count(
+    path: &str,
+    labels: Vec<Option<String>>,
+    mode: ParseMode,
+    text_fields: Option<Vec<String>>,
+    label_fields: Option<Vec<String>>,
+) {
     if mode != ParseMode::PlainText && !labels.is_empty() && labels[0] != None {
         error!("Cannot specify labels for non-plaintext parse mode");
         std::process::exit(1);
@@ -837,7 +1002,15 @@ fn cmd_count(path: &str, labels: Vec<Option<String>>, mode: ParseMode, text_fiel
     };
 }
 
-fn cmd_transform(input: String, output: Option<String>, mode: ParseMode, delim: String, labels: Vec<Option<String>>, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
+fn cmd_transform(
+    input: String,
+    output: Option<String>,
+    mode: ParseMode,
+    delim: String,
+    labels: Vec<Option<String>>,
+    text_fields: Option<Vec<String>>,
+    label_fields: Option<Vec<String>>,
+) {
     transform_inner(
         &mut Input::from_arg(Some(input)).expect("Couldn't open input"),
         &mut Output::from_arg(output).expect("Couldn't open output"),
@@ -849,9 +1022,23 @@ fn cmd_transform(input: String, output: Option<String>, mode: ParseMode, delim: 
     );
 }
 
-fn transform_inner(inbuf: &mut Input, outbuf: &mut Output, mode: ParseMode, delim: String, labels: Vec<Option<String>>, text_fields: Option<Vec<String>>, label_fields: Option<Vec<String>>) {
-    let label_fields = match label_fields { Some(fields) => fields, None => vec!() };
-    let text_fields = match text_fields { Some(fields) => fields, None => vec!() };
+fn transform_inner(
+    inbuf: &mut Input,
+    outbuf: &mut Output,
+    mode: ParseMode,
+    delim: String,
+    labels: Vec<Option<String>>,
+    text_fields: Option<Vec<String>>,
+    label_fields: Option<Vec<String>>,
+) {
+    let label_fields = match label_fields {
+        Some(fields) => fields,
+        None => vec![],
+    };
+    let text_fields = match text_fields {
+        Some(fields) => fields,
+        None => vec![],
+    };
     if mode == ParseMode::CSV {
         transform_csv(inbuf, outbuf, delim, &text_fields, &label_fields);
     } else if mode == ParseMode::PlainText {
@@ -861,17 +1048,31 @@ fn transform_inner(inbuf: &mut Input, outbuf: &mut Output, mode: ParseMode, deli
     }
 }
 
-fn transform_csv(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
+fn transform_csv(
+    inbuf: &mut dyn std::io::Read,
+    outbuf: &mut dyn std::io::Write,
+    delim: String,
+    text_fields: &Vec<String>,
+    label_fields: &Vec<String>,
+) {
     let mut reader = csv::Reader::from_reader(inbuf);
     let mut writer = csv::Writer::from_writer(outbuf);
-    writer.write_record(reader.headers().expect("Couldn't read header of input file"))
+    writer
+        .write_record(
+            reader
+                .headers()
+                .expect("Couldn't read header of input file"),
+        )
         .expect("Couldn't write header");
     let text_idxs: Vec<usize> = header_indexes(&mut reader, text_fields);
     let label_idxs: Vec<usize> = header_indexes(&mut reader, label_fields);
     for record in reader.records() {
         let record = record.expect("Couldn't read row from CSV");
-        let mut out_record: Vec<String> = vec!();
-        let labels: Vec<Option<String>> = label_idxs.iter().map(|l| record.get(l.clone()).map(|s| s.to_string())).collect();
+        let mut out_record: Vec<String> = vec![];
+        let labels: Vec<Option<String>> = label_idxs
+            .iter()
+            .map(|l| record.get(l.clone()).map(|s| s.to_string()))
+            .collect();
         for (idx, val) in record.iter().enumerate() {
             if text_idxs.contains(&idx) {
                 out_record.push(transform_text(&delim, &labels, val.to_string()));
@@ -879,37 +1080,73 @@ fn transform_csv(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write,
                 out_record.push(val.to_string());
             }
         }
-        writer.write_record(out_record.iter()).expect("Couldn't write CSV row");
+        writer
+            .write_record(out_record.iter())
+            .expect("Couldn't write CSV row");
     }
 }
 
-fn transform_plain(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write, delim: String, labels: Vec<Option<String>>) {
+fn transform_plain(
+    inbuf: &mut dyn std::io::Read,
+    outbuf: &mut dyn std::io::Write,
+    delim: String,
+    labels: Vec<Option<String>>,
+) {
     let reader = BufReader::new(inbuf);
     for line in reader.lines() {
-        writeln!(outbuf, "{}", transform_text(&delim, &labels, line.expect("Couldn't read plaintext line"))).expect("Couldn't write plaintext output");
+        writeln!(
+            outbuf,
+            "{}",
+            transform_text(&delim, &labels, line.expect("Couldn't read plaintext line"))
+        )
+        .expect("Couldn't write plaintext output");
     }
     outbuf.flush().expect("Couldn't flush output buffer");
 }
 
-fn transform_json(inbuf: &mut dyn std::io::Read, outbuf: &mut dyn std::io::Write, delim: String, text_fields: &Vec<String>, label_fields: &Vec<String>) {
+fn transform_json(
+    inbuf: &mut dyn std::io::Read,
+    outbuf: &mut dyn std::io::Write,
+    delim: String,
+    text_fields: &Vec<String>,
+    label_fields: &Vec<String>,
+) {
     let reader = BufReader::new(inbuf);
     for line in reader.lines() {
         if let Ok(object) = serde_json::from_str(&line.expect("Couldn't read JSON line")[..]) {
             let mut object: serde_json::Value = object;
-            let labels: Vec<Option<String>> = label_fields.iter().map(|l| object[l].as_str().map(|s| s.to_string())).collect();
+            let labels: Vec<Option<String>> = label_fields
+                .iter()
+                .map(|l| object[l].as_str().map(|s| s.to_string()))
+                .collect();
             for text_field in text_fields {
                 if let Some(text) = object[text_field].as_str() {
-                    object[text_field] = serde_json::value::Value::String(transform_text(&delim, &labels, text.to_string()));
+                    object[text_field] = serde_json::value::Value::String(transform_text(
+                        &delim,
+                        &labels,
+                        text.to_string(),
+                    ));
                 }
             }
-            write!(outbuf, "{}", serde_json::to_string(&object).expect("Couldn't dump object to json")).expect("Couldn't write JSON record");
+            write!(
+                outbuf,
+                "{}",
+                serde_json::to_string(&object).expect("Couldn't dump object to json")
+            )
+            .expect("Couldn't write JSON record");
         }
     }
     outbuf.flush().expect("Couldn't flush final JSON output");
 }
 
 // Allocates the given window to known phrases as best possible.  Returns number of stems consumed.
-fn allocate_ngrams(stem_window: &mut Vec<String>, buf: &mut String, label: &Option<String>, min_score: &f64, delim: &String) -> usize {
+fn allocate_ngrams(
+    stem_window: &mut Vec<String>,
+    buf: &mut String,
+    label: &Option<String>,
+    min_score: &f64,
+    delim: &String,
+) -> usize {
     let window_len = stem_window.len();
     let ngram_delim = NGRAM_DELIM.clone();
     if window_len > 1 {
@@ -918,16 +1155,23 @@ fn allocate_ngrams(stem_window: &mut Vec<String>, buf: &mut String, label: &Opti
             buf.push_str(&scored_ngram.ngram.replace(&ngram_delim, delim));
             window_len
         } else {
-            allocate_ngrams(&mut stem_window[..window_len - 1].to_vec(), buf, label, min_score, delim)
+            allocate_ngrams(
+                &mut stem_window[..window_len - 1].to_vec(),
+                buf,
+                label,
+                min_score,
+                delim,
+            )
         }
     } else {
         0
     }
 }
 
-
 fn transform_text(delim: &String, labels: &Vec<Option<String>>, document: String) -> String {
-    labels.iter().fold(document, |document, label| transform_text_inner(delim, label, &document))
+    labels.iter().fold(document, |document, label| {
+        transform_text_inner(delim, label, &document)
+    })
 }
 
 /// Eager implementation of phrase transform - as long as the the deque contains a phrase, keep trying to add more tokens
@@ -944,10 +1188,20 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
     for token in TOKEN_REGEX.find_iter(document) {
         current_phrase.push_back(token);
         if current_phrase.len() == max_ngram {
-            result.push_str(&document[last_token_end..current_phrase.get(0).expect("Should have been able to get head token").start()]);
+            result.push_str(
+                &document[last_token_end
+                    ..current_phrase
+                        .get(0)
+                        .expect("Should have been able to get head token")
+                        .start()],
+            );
             // At this point, the result string is up to date (apart from stems in the queue already)
-            let mut stem_window: Vec<String> = current_phrase.iter().map(|m| re_match_stem(m.clone())).collect();
-            let tokens_written = allocate_ngrams(&mut stem_window, &mut result, &label, &min_score, delim);
+            let mut stem_window: Vec<String> = current_phrase
+                .iter()
+                .map(|m| re_match_stem(m.clone()))
+                .collect();
+            let tokens_written =
+                allocate_ngrams(&mut stem_window, &mut result, &label, &min_score, delim);
             if tokens_written == 0 {
                 // No tokens were written, need to write the first one
                 let first_token = current_phrase.pop_front().unwrap();
@@ -955,7 +1209,10 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
                 last_token_end = first_token.end();
             } else {
                 // Tokens were written, we need to write the chars between the last written token and the first token still in the queue
-                last_token_end = current_phrase.get(tokens_written - 1).expect("Should have been able to get the last written token").end();
+                last_token_end = current_phrase
+                    .get(tokens_written - 1)
+                    .expect("Should have been able to get the last written token")
+                    .end();
                 for _idx in 0..tokens_written {
                     current_phrase.pop_front();
                 }
@@ -965,9 +1222,19 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
 
     // Handle the last few tokens (which may be a phrase!)
     while !current_phrase.is_empty() {
-        result.push_str(&document[last_token_end..current_phrase.get(0).expect("Should have been able to get head token").start()]);
-        let mut stem_window: Vec<String> = current_phrase.iter().map(|m| re_match_stem(m.clone())).collect();
-        let tokens_written = allocate_ngrams(&mut stem_window, &mut result, &label, &min_score, delim);
+        result.push_str(
+            &document[last_token_end
+                ..current_phrase
+                    .get(0)
+                    .expect("Should have been able to get head token")
+                    .start()],
+        );
+        let mut stem_window: Vec<String> = current_phrase
+            .iter()
+            .map(|m| re_match_stem(m.clone()))
+            .collect();
+        let tokens_written =
+            allocate_ngrams(&mut stem_window, &mut result, &label, &min_score, delim);
         if tokens_written == 0 {
             // No tokens were written, need to write the first one
             let first_token = current_phrase.pop_front().unwrap();
@@ -975,7 +1242,10 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
             last_token_end = first_token.end();
         } else {
             // Tokens were written, we need to write the chars between the last written token and the first token still in the queue
-            last_token_end = current_phrase.get(tokens_written - 1).expect("Should have been able to get the last written token").end();
+            last_token_end = current_phrase
+                .get(tokens_written - 1)
+                .expect("Should have been able to get the last written token")
+                .end();
             for _idx in 0..tokens_written {
                 current_phrase.pop_front();
             }
@@ -986,7 +1256,11 @@ fn transform_text_inner(delim: &String, label: &Option<String>, document: &Strin
     result
 }
 
-fn is_significant(ngram_hash: &u64, label: &Option<String>, min_score: &f64) -> Option<ScoredNGram> {
+fn is_significant(
+    ngram_hash: &u64,
+    label: &Option<String>,
+    min_score: &f64,
+) -> Option<ScoredNGram> {
     if let Some(scores) = SCORES.get(label) {
         if let Some(ngram_score) = scores.get(&ngram_hash) {
             if &ngram_score.score > min_score {
@@ -999,7 +1273,7 @@ fn is_significant(ngram_hash: &u64, label: &Option<String>, min_score: &f64) -> 
 
 fn list_phrase_labels() -> std::io::Result<Vec<Option<String>>> {
     let label_regex = Regex::new(r"counts_label=(.*).csv").unwrap();
-    let mut labels = vec!();
+    let mut labels = vec![];
     for fpath in std::fs::read_dir("data/")?.filter_map(|fpath| fpath.ok()) {
         if let Some(fname) = fpath.path().file_name() {
             let fname = fname.to_string_lossy().into_owned();
@@ -1016,7 +1290,7 @@ fn list_phrase_labels() -> std::io::Result<Vec<Option<String>>> {
 
 fn list_score_labels() -> std::io::Result<Vec<Option<String>>> {
     let label_regex = Regex::new(r"scores_label=(.*).csv").unwrap();
-    let mut labels = vec!();
+    let mut labels = vec![];
     for fpath in std::fs::read_dir("data/")?.filter_map(|fpath| fpath.ok()) {
         if let Some(fname) = fpath.path().file_name() {
             let fname = fname.to_string_lossy().into_owned();
@@ -1032,7 +1306,7 @@ fn list_score_labels() -> std::io::Result<Vec<Option<String>>> {
 }
 
 fn cmd_export() {
-    // Cases: 
+    // Cases:
     //  - No phrases learned - error
     //  - One label learned -  can only export phrases?
     //  - Multiple labels learned - can export phrases and unigrams
@@ -1042,20 +1316,23 @@ fn cmd_export() {
         std::process::exit(1);
     }
 
-    let mut label_ngrams = load_canonicalized_ngrams(&available_labels.to_owned()).expect("Couldn't load ngram counts form disk");
+    let mut label_ngrams = load_canonicalized_ngrams(&available_labels.to_owned())
+        .expect("Couldn't load ngram counts form disk");
 
     if label_ngrams.len() == 0 {
         warn!("Found no ngram counts, exiting.");
         std::process::exit(0);
     }
 
-    let default_ngrams = label_ngrams.remove(&None).expect("Didn't find default ngrams in loaded ngrams.");
+    let default_ngrams = label_ngrams
+        .remove(&None)
+        .expect("Didn't find default ngrams in loaded ngrams.");
 
     for (label, ngrams) in label_ngrams {
         let scores = score_ngrams(ngrams, &default_ngrams);
         write_scores(&label.clone(), &scores);
         debug!("Finished scoring label {:?}", label);
-    };
+    }
 
     write_scores(&None, &score_default_ngrams(default_ngrams));
 }
@@ -1067,20 +1344,27 @@ fn ngram_valid(ngram: &NGram) -> bool {
     let first = split.next();
     let last = split.last();
     if let Some(right_unigram) = last {
-        if HEAD_UNIGRAM_IGNORES.contains(&first.expect("Should have left unigram").to_owned()) || TAIL_UNIGRAM_IGNORES.contains(&right_unigram.to_owned()) {
+        if HEAD_UNIGRAM_IGNORES.contains(&first.expect("Should have left unigram").to_owned())
+            || TAIL_UNIGRAM_IGNORES.contains(&right_unigram.to_owned())
+        {
             return false;
         }
     }
     true
 }
 
-fn load_canonicalized_ngrams(labels: &Vec<Option<String>>) -> std::io::Result<HashMap<Option<String>, CanonicalizedNGramCounts>> {
+fn load_canonicalized_ngrams(
+    labels: &Vec<Option<String>>,
+) -> std::io::Result<HashMap<Option<String>, CanonicalizedNGramCounts>> {
     let mut label_ngrams = HashMap::new();
-    read_partition_counts_for_labels(labels, &mut label_ngrams).expect("Couldn't read partition counts");
+    read_partition_counts_for_labels(labels, &mut label_ngrams)
+        .expect("Couldn't read partition counts");
     Ok(canonicalize_ngrams(&mut label_ngrams))
 }
 
-fn canonicalize_ngrams(label_ngrams: &mut HashMap<Option<String>, NGramCounts>) -> HashMap<Option<String>, CanonicalizedNGramCounts> {
+fn canonicalize_ngrams(
+    label_ngrams: &mut HashMap<Option<String>, NGramCounts>,
+) -> HashMap<Option<String>, CanonicalizedNGramCounts> {
     // Add default partition as the sum over labels per ngram count
     let mut default_ngrams = label_ngrams.remove(&None).unwrap_or(NGramCounts::new());
 
@@ -1093,9 +1377,18 @@ fn canonicalize_ngrams(label_ngrams: &mut HashMap<Option<String>, NGramCounts>) 
     for (ngram, count) in &default_ngrams {
         let ngram_hash = hash_ngram(&ngram);
         if let Some(ngram_counts) = ngram_counts_map.get_mut(&ngram_hash) {
-            ngram_counts.push(NGramCount { ngram: ngram.clone(), count: count.clone() });
+            ngram_counts.push(NGramCount {
+                ngram: ngram.clone(),
+                count: count.clone(),
+            });
         } else {
-            ngram_counts_map.insert(ngram_hash, vec!(NGramCount { ngram: ngram.clone(), count: count.clone() }));
+            ngram_counts_map.insert(
+                ngram_hash,
+                vec![NGramCount {
+                    ngram: ngram.clone(),
+                    count: count.clone(),
+                }],
+            );
         }
     }
 
@@ -1103,7 +1396,11 @@ fn canonicalize_ngrams(label_ngrams: &mut HashMap<Option<String>, NGramCounts>) 
     let mut canon_ngrams = CanonicalizedNGramCounts::new();
     for (ngram_hash, ngram_counts) in ngram_counts_map {
         let count_sum = ngram_counts.iter().map(|ngc| ngc.count).sum();
-        let mut canonical_ngram = ngram_counts.iter().max_by_key(|ngc| ngc.count).expect("ngram counts shouldn't be empty").clone();
+        let mut canonical_ngram = ngram_counts
+            .iter()
+            .max_by_key(|ngc| ngc.count)
+            .expect("ngram counts shouldn't be empty")
+            .clone();
         canonical_ngram.count = count_sum;
         canon_ngrams.insert(ngram_hash, canonical_ngram);
     }
@@ -1117,11 +1414,22 @@ fn canonicalize_ngrams(label_ngrams: &mut HashMap<Option<String>, NGramCounts>) 
             if let Some(canon_ngram) = canonized_ngrams.get_mut(&ngram_hash) {
                 canon_ngram.count += count.clone();
             } else {
-                let canon_ngram = NGramCount { ngram: canon_ngrams.get(&ngram_hash).expect("Didn't find stem in canon ngrams").ngram.clone(), count: count.clone() };
+                let canon_ngram = NGramCount {
+                    ngram: canon_ngrams
+                        .get(&ngram_hash)
+                        .expect("Didn't find stem in canon ngrams")
+                        .ngram
+                        .clone(),
+                    count: count.clone(),
+                };
                 canonized_ngrams.insert(ngram_hash, canon_ngram);
             }
         }
-        debug!("Inserting canonicalized ngrams of size {} for label {:?}", canonized_ngrams.len(), label);
+        debug!(
+            "Inserting canonicalized ngrams of size {} for label {:?}",
+            canonized_ngrams.len(),
+            label
+        );
         canonicalized.insert(label.to_owned(), canonized_ngrams);
     }
 
@@ -1131,9 +1439,12 @@ fn canonicalize_ngrams(label_ngrams: &mut HashMap<Option<String>, NGramCounts>) 
     canonicalized
 }
 
-fn score_ngrams(ngram_counts: CanonicalizedNGramCounts, default_ngram_counts: &CanonicalizedNGramCounts) -> NGramScores {
+fn score_ngrams(
+    ngram_counts: CanonicalizedNGramCounts,
+    default_ngram_counts: &CanonicalizedNGramCounts,
+) -> NGramScores {
     // Score tokens as a function of ngram_counts and default_ngram_counts
-    // Score phrases as a funciton of ngram_counts alone
+    // Score phrases as a function of ngram_counts alone
 
     let ngram_delim = NGRAM_DELIM.clone();
     let mut scores = NGramScores::new();
@@ -1142,14 +1453,18 @@ fn score_ngrams(ngram_counts: CanonicalizedNGramCounts, default_ngram_counts: &C
     let min_score = MIN_SCORE.clone();
     let min_count = MIN_COUNT.clone();
 
-    let all_tokens_total_count: i64 = default_ngram_counts.iter()
-                .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
-                .map(|(_ngram_hash, ngram_count)| ngram_count.count).sum();
+    let all_tokens_total_count: i64 = default_ngram_counts
+        .iter()
+        .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
+        .map(|(_ngram_hash, ngram_count)| ngram_count.count)
+        .sum();
     let all_tokens_total_count: f64 = all_tokens_total_count as f64;
 
-    let this_label_total_count: i64 = ngram_counts.iter()
-                .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
-                .map(|(_ngram_hash, ngram_count)| ngram_count.count).sum();
+    let this_label_total_count: i64 = ngram_counts
+        .iter()
+        .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
+        .map(|(_ngram_hash, ngram_count)| ngram_count.count)
+        .sum();
     let this_label_total_count: f64 = this_label_total_count as f64;
 
     for (ngram_hash, ngram_count) in &ngram_counts {
@@ -1158,12 +1473,24 @@ fn score_ngrams(ngram_counts: CanonicalizedNGramCounts, default_ngram_counts: &C
         }
 
         // NGram intersect Label NPMI
-        let ngram_count_across_labels = default_ngram_counts.get(&ngram_hash).map(|ngc| ngc.count).unwrap_or(ngram_count.count.clone());
-        if let Some(mut score) = npmi_label_score(&all_tokens_total_count, &this_label_total_count, &ngram_count_across_labels, &ngram_count.count) {
-
+        let ngram_count_across_labels = default_ngram_counts
+            .get(&ngram_hash)
+            .map(|ngc| ngc.count)
+            .unwrap_or(ngram_count.count.clone());
+        if let Some(mut score) = npmi_label_score(
+            &all_tokens_total_count,
+            &this_label_total_count,
+            &ngram_count_across_labels,
+            &ngram_count.count,
+        ) {
             // NGram intersect Tokens NPMI
             if ngram_count.ngram.matches(&ngram_delim).count() >= min_ngram {
-                let phrase_score = npmi_phrase_score(&this_label_total_count, &ngram_count, &ngram_counts, &min_count);
+                let phrase_score = npmi_phrase_score(
+                    &this_label_total_count,
+                    &ngram_count,
+                    &ngram_counts,
+                    &min_count,
+                );
                 if let Some(phrase_score) = phrase_score {
                     // Geometric Mean - NOTE: this means if either score is less than zero, the ngram is essentially ignored
                     // score = (score * phrase_score).sqrt();
@@ -1171,9 +1498,15 @@ fn score_ngrams(ngram_counts: CanonicalizedNGramCounts, default_ngram_counts: &C
                     score = (score + phrase_score) / 2f64;
                 }
             }
-            
+
             if score > min_score {
-                scores.insert(ngram_hash.clone(), ScoredNGram { ngram: ngram_count.ngram.clone(), score: score });
+                scores.insert(
+                    ngram_hash.clone(),
+                    ScoredNGram {
+                        ngram: ngram_count.ngram.clone(),
+                        score: score,
+                    },
+                );
             }
         }
     }
@@ -1193,21 +1526,34 @@ fn score_default_ngrams(default_ngram_counts: CanonicalizedNGramCounts) -> NGram
         min_ngram = 2;
     }
 
-    let all_tokens_total_count: i64 = default_ngram_counts.iter()
-                .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
-                .map(|(_ngram_hash, ngram_count)| ngram_count.count).sum();
+    let all_tokens_total_count: i64 = default_ngram_counts
+        .iter()
+        .filter(|(_ngram_hash, ngram_count)| !ngram_count.ngram.contains(&ngram_delim))
+        .map(|(_ngram_hash, ngram_count)| ngram_count.count)
+        .sum();
     let all_tokens_total_count: f64 = all_tokens_total_count as f64;
 
     for (ngram_hash, ngram_count) in &default_ngram_counts {
         if !ngram_valid(&ngram_count.ngram) {
             continue;
         }
-        
+
         if ngram_count.ngram.matches(&ngram_delim).count() >= min_ngram {
-            let phrase_score = npmi_phrase_score(&all_tokens_total_count, &ngram_count, &default_ngram_counts, &min_count);
+            let phrase_score = npmi_phrase_score(
+                &all_tokens_total_count,
+                &ngram_count,
+                &default_ngram_counts,
+                &min_count,
+            );
             if let Some(phrase_score) = phrase_score {
                 if phrase_score > min_score {
-                    scores.insert(ngram_hash.clone(), ScoredNGram { ngram: ngram_count.ngram.clone(), score: phrase_score });
+                    scores.insert(
+                        ngram_hash.clone(),
+                        ScoredNGram {
+                            ngram: ngram_count.ngram.clone(),
+                            score: phrase_score,
+                        },
+                    );
                 }
             }
         }
@@ -1218,13 +1564,20 @@ fn score_default_ngrams(default_ngram_counts: CanonicalizedNGramCounts) -> NGram
 
 fn write_scores(label: &Option<String>, scores: &NGramScores) {
     let max_export = MAX_EXPORT.clone();
-    let mut scores: Vec<NGramScoreRow> = scores.iter().filter_map(|(ngram_hash, ngram_score)| {
-        if ngram_score.score.is_finite() {
-            Some(NGramScoreRow { ngram: ngram_to_str(&ngram_score.ngram), hash: ngram_hash.clone(), score: ngram_score.score })
-        } else {
-            None
-        }
-    }).collect();
+    let mut scores: Vec<NGramScoreRow> = scores
+        .iter()
+        .filter_map(|(ngram_hash, ngram_score)| {
+            if ngram_score.score.is_finite() {
+                Some(NGramScoreRow {
+                    ngram: ngram_to_str(&ngram_score.ngram),
+                    hash: ngram_hash.clone(),
+                    score: ngram_score.score,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
     scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     let mut written = 0;
 
@@ -1247,7 +1600,12 @@ fn write_scores(label: &Option<String>, scores: &NGramScores) {
 /// p_joint = ngram_count / this_label_total_count
 /// pt = this_token_total_count / all_tokens_total_count
 /// pl = this_label_total_count / all_labels_total_count
-fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, ngram_count_across_labels: &i64, ngram_count: &i64) -> Option<f64> {
+fn npmi_label_score(
+    all_tokens_total_count: &f64,
+    this_label_total_count: &f64,
+    ngram_count_across_labels: &i64,
+    ngram_count: &i64,
+) -> Option<f64> {
     let pj = ngram_count.clone() as f64 / all_tokens_total_count;
     let pt = ngram_count_across_labels.clone() as f64 / all_tokens_total_count;
     let pl = this_label_total_count / all_tokens_total_count;
@@ -1260,22 +1618,51 @@ fn npmi_label_score(all_tokens_total_count: &f64, this_label_total_count: &f64, 
     }
 }
 
-fn npmi_phrase_score(corpus_size: &f64, ngram_count: &NGramCount, ngrams: &CanonicalizedNGramCounts, min_count: &i64) -> Option<f64> {
+fn npmi_phrase_score(
+    corpus_size: &f64,
+    ngram_count: &NGramCount,
+    ngrams: &CanonicalizedNGramCounts,
+    min_count: &i64,
+) -> Option<f64> {
     let count = ngram_count.count;
     let ngram_delim = NGRAM_DELIM.clone();
     if &count > min_count {
-        let token_vec: Vec<String> = ngram_count.ngram.split(&ngram_delim).map(|s| STEMMER.stem(&s.to_lowercase()).to_string()).collect();
+        let token_vec: Vec<String> = ngram_count
+            .ngram
+            .split(&ngram_delim)
+            .map(|s| STEMMER.stem(&s.to_lowercase()).to_string())
+            .collect();
 
         let left_subgram: NGramHash = ngram_hash_vec(&token_vec[..token_vec.len() - 1].to_vec());
         let left_unigram: NGramHash = ngram_hash_vec(&token_vec[..1].to_vec());
         let right_subgram: NGramHash = ngram_hash_vec(&token_vec[1..].to_vec());
-        let right_unigram: NGramHash = ngram_hash_vec(&token_vec[token_vec.len() - 1 ..].to_vec());
+        let right_unigram: NGramHash = ngram_hash_vec(&token_vec[token_vec.len() - 1..].to_vec());
 
         let pj: f64 = count.clone() as f64 / corpus_size;
-        let pau: f64 = ngrams.get(&left_unigram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
-        let pas: f64 = ngrams.get(&right_subgram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
-        let pbs: f64 = ngrams.get(&left_subgram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
-        let pbu: f64 = ngrams.get(&right_unigram).map(|ngc| ngc.count).unwrap_or(count).clone() as f64 / corpus_size;
+        let pau: f64 = ngrams
+            .get(&left_unigram)
+            .map(|ngc| ngc.count)
+            .unwrap_or(count)
+            .clone() as f64
+            / corpus_size;
+        let pas: f64 = ngrams
+            .get(&right_subgram)
+            .map(|ngc| ngc.count)
+            .unwrap_or(count)
+            .clone() as f64
+            / corpus_size;
+        let pbs: f64 = ngrams
+            .get(&left_subgram)
+            .map(|ngc| ngc.count)
+            .unwrap_or(count)
+            .clone() as f64
+            / corpus_size;
+        let pbu: f64 = ngrams
+            .get(&right_unigram)
+            .map(|ngc| ngc.count)
+            .unwrap_or(count)
+            .clone() as f64
+            / corpus_size;
         let pmi_a: f64 = (pj / pau / pbs).ln();
         let pmi_b: f64 = (pj / pbu / pas).ln();
         let score = ((pmi_a + pmi_b) / 2f64) / -pj.ln();
@@ -1294,7 +1681,7 @@ fn show_label(label: &Option<String>, num: &usize) {
         println!("\nDefault");
         File::open("data/scores_default.csv").expect("Couldn't read scores file.")
     };
-    
+
     let reader = BufReader::new(file);
     for line in reader.lines().take(*num + 1) {
         println!("{}", line.expect("Couldn't read line from scores file"));
@@ -1309,8 +1696,14 @@ fn cmd_show(labels: Vec<Option<String>>, num: usize) {
 
 fn normalize_label(label: &Option<String>) -> Option<String> {
     if let Some(label) = label {
-        let label = Regex::new(r"\&").unwrap().replace_all(label, "and").to_string();
-        let label = Regex::new(r"[<>\|\\:\(\)&;]").unwrap().replace_all(&label, "").to_string();
+        let label = Regex::new(r"\&")
+            .unwrap()
+            .replace_all(label, "and")
+            .to_string();
+        let label = Regex::new(r"[<>\|\\:\(\)&;]")
+            .unwrap()
+            .replace_all(&label, "")
+            .to_string();
         Some(label)
     } else {
         None
@@ -1318,7 +1711,7 @@ fn normalize_label(label: &Option<String>) -> Option<String> {
 }
 
 fn main() {
-    let matches = clap_app!(phrase => 
+    let matches = clap_app!(phrase =>
         (version: "0.3.6")
         (author: "Stuart Axelbrooke <stuart@axelbrooke.com>")
         (about: "Detect phrases in free text data.")
@@ -1365,25 +1758,34 @@ fn main() {
         env_logger::init();
         let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
         let mode: ParseMode = mode.expect("Invalid parse mode provided.");
-        let labels: Option<Vec<String>> = matches.values_of("label").map(|v| v.map(|s| s.to_string()).collect());
+        let labels: Option<Vec<String>> = matches
+            .values_of("label")
+            .map(|v| v.map(|s| s.to_string()).collect());
         let labels: Vec<Option<String>> = if let Some(labels) = labels {
             if labels.is_empty() {
-                vec!(None)
+                vec![None]
             } else {
                 labels.iter().map(|l| Some(l.clone())).collect()
             }
         } else {
-            vec!(None)
+            vec![None]
         };
-        if let Some(num_workers) = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")) {
+        if let Some(num_workers) = matches
+            .value_of("workers")
+            .map(|s| s.parse::<usize>().expect("Couldn't parse --workers"))
+        {
             std::env::set_var("RAYON_NUM_THREADS", num_workers.to_string());
         }
-        let text_fields: Option<Vec<String>> = matches.values_of("textfield").map(|v| v.map(|s| s.to_string()).collect());
-        let label_fields: Option<Vec<String>> = matches.values_of("labelfield").map(|v| v.map(|s| s.to_string()).collect());
+        let text_fields: Option<Vec<String>> = matches
+            .values_of("textfield")
+            .map(|v| v.map(|s| s.to_string()).collect());
+        let label_fields: Option<Vec<String>> = matches
+            .values_of("labelfield")
+            .map(|v| v.map(|s| s.to_string()).collect());
         match matches.value_of("input") {
             Some(path) => {
                 cmd_count(path, labels, mode, text_fields, label_fields);
-            },
+            }
             None => {
                 error!("Must provide a file to read text from, or pass - and stream to stdin.");
                 std::process::exit(1);
@@ -1391,46 +1793,72 @@ fn main() {
         }
     } else if let Some(_matches) = matches.subcommand_matches("export") {
         env_logger::init();
-        if let Some(num_workers) = matches.value_of("workers").map(|s| s.parse::<usize>().expect("Couldn't parse --workers")) {
+        if let Some(num_workers) = matches
+            .value_of("workers")
+            .map(|s| s.parse::<usize>().expect("Couldn't parse --workers"))
+        {
             std::env::set_var("RAYON_NUM_THREADS", num_workers.to_string());
         }
         cmd_export();
     } else if let Some(matches) = matches.subcommand_matches("transform") {
         env_logger::init();
-        let delim = matches.value_of("delim").map(|s| s.to_string()).unwrap_or("_".to_string());
+        let delim = matches
+            .value_of("delim")
+            .map(|s| s.to_string())
+            .unwrap_or("_".to_string());
         let output = matches.value_of("output").map(|s| s.to_string());
         let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
         let mode: ParseMode = mode.expect("Invalid parse mode provided.");
-        let labels: Option<Vec<String>> = matches.values_of("label").map(|v| v.map(|s| s.to_string()).collect());
+        let labels: Option<Vec<String>> = matches
+            .values_of("label")
+            .map(|v| v.map(|s| s.to_string()).collect());
         let labels: Vec<Option<String>> = if let Some(labels) = labels {
             if labels.is_empty() {
-                vec!(None)
+                vec![None]
             } else {
-                labels.iter().map(|l| normalize_label(&Some(l.clone()))).collect()
+                labels
+                    .iter()
+                    .map(|l| normalize_label(&Some(l.clone())))
+                    .collect()
             }
         } else {
-            vec!(None)
+            vec![None]
         };
         let labels = labels.iter().map(|label| normalize_label(&label)).collect();
-        let text_fields: Option<Vec<String>> = matches.values_of("textfield").map(|v| v.map(|s| s.to_string()).collect());
-        let label_fields: Option<Vec<String>> = matches.values_of("labelfield").map(|v| v.map(|s| s.to_string()).collect());
+        let text_fields: Option<Vec<String>> = matches
+            .values_of("textfield")
+            .map(|v| v.map(|s| s.to_string()).collect());
+        let label_fields: Option<Vec<String>> = matches
+            .values_of("labelfield")
+            .map(|v| v.map(|s| s.to_string()).collect());
         match matches.value_of("input") {
             Some(input) => {
-                cmd_transform(input.to_string(), output, mode, delim, labels, text_fields, label_fields);
-            },
+                cmd_transform(
+                    input.to_string(),
+                    output,
+                    mode,
+                    delim,
+                    labels,
+                    text_fields,
+                    label_fields,
+                );
+            }
             None => {
                 error!("Must provide a file to read text from, or pass - and stream to stdin.");
                 std::process::exit(1);
             }
         }
     } else if let Some(matches) = matches.subcommand_matches("show") {
-        let mut labels: Vec<Option<String>> = vec!();
+        let mut labels: Vec<Option<String>> = vec![];
         if let Some(found_labels) = matches.values_of("label") {
             labels.extend(found_labels.map(|l| Some(l.to_string())));
         } else {
             labels.extend(list_score_labels().expect("Couldn't list labels"));
         }
-        let num: usize = matches.value_of("num").map(|s| s.parse::<usize>().expect("Couldn't parse --num")).unwrap_or(5);
+        let num: usize = matches
+            .value_of("num")
+            .map(|s| s.parse::<usize>().expect("Couldn't parse --num"))
+            .unwrap_or(5);
         cmd_show(labels, num);
     }
 }
