@@ -143,6 +143,10 @@ _Note:_ Exports do not gain much from parallelization
 
 A variety of environment variables can be used:
 
+`ROCKET_ADDRESS` - The address so serve on, defaults to localhost. (Other [Rocket configs](https://rocket.rs/v0.4/guide/configuration/#environment) can be assigned, also)
+
+`ROCKET_PORT` - The port to serve on, defaults to 6220.
+
 `LANG` - Determines the stemmer language to use, [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes).  Should be set automatically on Unix systems, but can be overridden.
 
 `TOKEN_REGEX` - The regular expression used to find tokens when learning and labeling phrases.
