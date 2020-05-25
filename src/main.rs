@@ -1326,13 +1326,15 @@ fn cmd_export() {
 
     let default_ngrams = label_ngrams
         .remove(&None)
-        .expect("Didn't find default ngrams in loaded ngrams.");
+        .expect("Didn't find default ngrams in loaded ngrams.")
+        .clone();
 
-    for (label, ngrams) in label_ngrams {
+    let label_ngrams: Vec<(&Option<String>, &CanonicalizedNGramCounts)> = label_ngrams.iter().collect();
+    label_ngrams.par_iter().for_each(|(label, ngrams)| {
         let scores = score_ngrams(ngrams, &default_ngrams);
-        write_scores(&label.clone(), &scores);
+        write_scores(label, &scores);
         debug!("Finished scoring label {:?}", label);
-    }
+    });
 
     write_scores(&None, &score_default_ngrams(default_ngrams));
 }
@@ -1405,11 +1407,11 @@ fn canonicalize_ngrams(
         canon_ngrams.insert(ngram_hash, canonical_ngram);
     }
 
-    let mut canonicalized: HashMap<Option<String>, CanonicalizedNGramCounts> = HashMap::new();
-    for (label, ngrams) in label_ngrams {
+    let label_ngrams: Vec<(&Option<String>, &NGramCounts)> = label_ngrams.iter().collect();
+    let mut canonicalized: HashMap<Option<String>, CanonicalizedNGramCounts> = label_ngrams.par_iter().map(|(label, ngrams)| {
         debug!("Assigning canonical ngrams for label {:?}", label);
         let mut canonized_ngrams = CanonicalizedNGramCounts::new();
-        for (ngram, count) in ngrams {
+        for (ngram, count) in *ngrams {
             let ngram_hash = hash_ngram(&ngram);
             if let Some(canon_ngram) = canonized_ngrams.get_mut(&ngram_hash) {
                 canon_ngram.count += count.clone();
@@ -1430,8 +1432,10 @@ fn canonicalize_ngrams(
             canonized_ngrams.len(),
             label
         );
-        canonicalized.insert(label.to_owned(), canonized_ngrams);
-    }
+        let label = label.as_ref().map(|s| s.clone());
+        let result: (Option<String>, CanonicalizedNGramCounts) = (label, canonized_ngrams);
+        result
+    }).collect();
 
     canonicalized.insert(None, canon_ngrams);
 
@@ -1440,7 +1444,7 @@ fn canonicalize_ngrams(
 }
 
 fn score_ngrams(
-    ngram_counts: CanonicalizedNGramCounts,
+    ngram_counts: &CanonicalizedNGramCounts,
     default_ngram_counts: &CanonicalizedNGramCounts,
 ) -> NGramScores {
     // Score tokens as a function of ngram_counts and default_ngram_counts
@@ -1467,7 +1471,7 @@ fn score_ngrams(
         .sum();
     let this_label_total_count: f64 = this_label_total_count as f64;
 
-    for (ngram_hash, ngram_count) in &ngram_counts {
+    for (ngram_hash, ngram_count) in ngram_counts {
         if !ngram_valid(&ngram_count.ngram) {
             continue;
         }
