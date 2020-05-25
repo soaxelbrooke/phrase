@@ -472,14 +472,16 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
                 labels = vec![None];
             }
 
-            let mut significant_terms = vec![];
+            let mut significant_terms = HashSet::new();
             for label in &labels {
                 if let Some(scores) = SCORES.get(label) {
                     significant_terms.extend(analyze_text(&d.text, scores, &max_ngram, &min_score));
                 }
             }
+            let significant_terms: Vec<String> =
+                significant_terms.iter().map(|s| s.to_owned()).collect();
             AnalyzedDocument {
-                labels: labels,
+                labels,
                 text: d.text.to_owned(),
                 ngrams: significant_terms,
             }
@@ -1329,7 +1331,8 @@ fn cmd_export() {
         .expect("Didn't find default ngrams in loaded ngrams.")
         .clone();
 
-    let label_ngrams: Vec<(&Option<String>, &CanonicalizedNGramCounts)> = label_ngrams.iter().collect();
+    let label_ngrams: Vec<(&Option<String>, &CanonicalizedNGramCounts)> =
+        label_ngrams.iter().collect();
     label_ngrams.par_iter().for_each(|(label, ngrams)| {
         let scores = score_ngrams(ngrams, &default_ngrams);
         write_scores(label, &scores);
@@ -1408,34 +1411,37 @@ fn canonicalize_ngrams(
     }
 
     let label_ngrams: Vec<(&Option<String>, &NGramCounts)> = label_ngrams.iter().collect();
-    let mut canonicalized: HashMap<Option<String>, CanonicalizedNGramCounts> = label_ngrams.par_iter().map(|(label, ngrams)| {
-        debug!("Assigning canonical ngrams for label {:?}", label);
-        let mut canonized_ngrams = CanonicalizedNGramCounts::new();
-        for (ngram, count) in *ngrams {
-            let ngram_hash = hash_ngram(&ngram);
-            if let Some(canon_ngram) = canonized_ngrams.get_mut(&ngram_hash) {
-                canon_ngram.count += count.clone();
-            } else {
-                let canon_ngram = NGramCount {
-                    ngram: canon_ngrams
-                        .get(&ngram_hash)
-                        .expect("Didn't find stem in canon ngrams")
-                        .ngram
-                        .clone(),
-                    count: count.clone(),
-                };
-                canonized_ngrams.insert(ngram_hash, canon_ngram);
+    let mut canonicalized: HashMap<Option<String>, CanonicalizedNGramCounts> = label_ngrams
+        .par_iter()
+        .map(|(label, ngrams)| {
+            debug!("Assigning canonical ngrams for label {:?}", label);
+            let mut canonized_ngrams = CanonicalizedNGramCounts::new();
+            for (ngram, count) in *ngrams {
+                let ngram_hash = hash_ngram(&ngram);
+                if let Some(canon_ngram) = canonized_ngrams.get_mut(&ngram_hash) {
+                    canon_ngram.count += count.clone();
+                } else {
+                    let canon_ngram = NGramCount {
+                        ngram: canon_ngrams
+                            .get(&ngram_hash)
+                            .expect("Didn't find stem in canon ngrams")
+                            .ngram
+                            .clone(),
+                        count: count.clone(),
+                    };
+                    canonized_ngrams.insert(ngram_hash, canon_ngram);
+                }
             }
-        }
-        debug!(
-            "Inserting canonicalized ngrams of size {} for label {:?}",
-            canonized_ngrams.len(),
-            label
-        );
-        let label = label.as_ref().map(|s| s.clone());
-        let result: (Option<String>, CanonicalizedNGramCounts) = (label, canonized_ngrams);
-        result
-    }).collect();
+            debug!(
+                "Inserting canonicalized ngrams of size {} for label {:?}",
+                canonized_ngrams.len(),
+                label
+            );
+            let label = label.as_ref().map(|s| s.clone());
+            let result: (Option<String>, CanonicalizedNGramCounts) = (label, canonized_ngrams);
+            result
+        })
+        .collect();
 
     canonicalized.insert(None, canon_ngrams);
 
