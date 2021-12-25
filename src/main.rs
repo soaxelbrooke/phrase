@@ -2,8 +2,6 @@
 #[macro_use]
 extern crate rocket;
 #[macro_use]
-extern crate rocket_contrib;
-#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate clap;
@@ -18,7 +16,7 @@ extern crate rust_stemmers; // see https://crates.io/crates/rust-stemmers
 use arrayvec::ArrayString;
 use rayon::prelude::*;
 use regex::{Match, Regex};
-use rocket_contrib::json::{Json, JsonValue};
+use rocket::serde::{Serialize, json::json, json::Json, json::Value};
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -31,9 +29,7 @@ use std::path::Path;
 // [-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)
 
 const NGRAM_MAX_CHARS: usize = 32;
-const LABEL_DELIM: char = ';';
 
-type StemmedNGram = NGram;
 type NGram = ArrayString<[u8; NGRAM_MAX_CHARS]>;
 type NGramHash = u64;
 
@@ -456,7 +452,7 @@ fn analyze_text(
 }
 
 #[post("/analyze", data = "<data>")]
-fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
+fn api_analyze(data: Json<ApiAnalyzeRequest>) -> Value {
     let mut documents = data.0.documents.clone();
     let max_ngram = MAX_NGRAM.clone();
     let min_score = MIN_SCORE.clone();
@@ -491,7 +487,7 @@ fn api_analyze(data: Json<ApiAnalyzeRequest>) -> JsonValue {
 }
 
 #[post("/transform?<delim>", data = "<data>")]
-fn api_transform(delim: Option<String>, data: Json<ApiTransformRequest>) -> JsonValue {
+fn api_transform(delim: Option<String>, data: Json<ApiTransformRequest>) -> Value {
     let mut transformed_docs: Vec<Document> = vec![];
     let delim = delim.unwrap_or("_".to_string());
 
@@ -508,7 +504,7 @@ fn api_transform(delim: Option<String>, data: Json<ApiTransformRequest>) -> Json
 }
 
 #[get("/labels")]
-fn api_list_labels() -> JsonValue {
+fn api_list_labels() -> Value {
     if let Ok(labels) = list_score_labels() {
         json!(ApiListLabelsResponse { labels: labels })
     } else {
@@ -516,13 +512,6 @@ fn api_list_labels() -> JsonValue {
             error: "Couldn't list labels.".to_string()
         })
     }
-}
-
-fn serve() {
-    println!("Starting phrase server");
-    rocket::ignite()
-        .mount("/", routes![api_list_labels, api_analyze, api_transform])
-        .launch();
 }
 
 fn re_match_stem(re_match: Match) -> String {
@@ -1620,7 +1609,7 @@ fn npmi_label_score(
     let pt = ngram_count_across_labels.clone() as f64 / all_tokens_total_count;
     let pl = this_label_total_count / all_tokens_total_count;
 
-    if pt > 0f64 && pl > 0f64 && ngram_count >= &MIN_COUNT {
+    if pt > 0f64 && pl > 0f64 && ngram_count >= &*MIN_COUNT {
         let score = (pj / pt / pl).ln() / -pj.ln();
         Some(score)
     } else {
@@ -1720,9 +1709,10 @@ fn normalize_label(label: &Option<String>) -> Option<String> {
     }
 }
 
-fn main() {
+#[rocket::main]
+async fn main() {
     let matches = clap_app!(phrase =>
-        (version: "0.3.6")
+        (version: "0.3.7")
         (author: "Stuart Axelbrooke <stuart@axelbrooke.com>")
         (about: "Detect phrases in free text data.")
         (setting: clap::AppSettings::ArgRequiredElseHelp)
@@ -1763,7 +1753,11 @@ fn main() {
     ).get_matches();
 
     if let Some(_matches) = matches.subcommand_matches("serve") {
-        serve();
+        println!("Starting phrase server");
+        rocket::build()
+            .mount("/", routes![api_list_labels, api_analyze, api_transform])
+            .launch()
+            .await;
     } else if let Some(matches) = matches.subcommand_matches("count") {
         env_logger::init();
         let mode: Result<ParseMode, ()> = matches.value_of("mode").unwrap_or("plain").parse();
